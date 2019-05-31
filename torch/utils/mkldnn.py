@@ -40,13 +40,20 @@ def to_mkldnn(module):
                 m.stride,
                 m.dilation,
                 m.groups)
+        if m.weight._grad is not None:
+            m.weight._grad.data = torch._C._nn.mkldnn_reorder_conv2d_weight(
+                m.weight._grad.data,
+                m.padding,
+                m.stride,
+                m.dilation,
+                m.groups)
 
     return module.apply(m_fn)
 
 def to_dense(module):
     def t_fn(t):
         # transfer mkldnn tensor internal format to public format first
-        if t.is_floating_point():
+        if t.layout is torch._mkldnn:
             return torch._C._nn.mkldnn_weight_to_public(t).to_dense()
         else:
             return t

@@ -1317,7 +1317,7 @@
     CPU: mul_
     CUDA: mul_
     SparseCPU: mul_
-    SparseCUDA: mul
+    SparseCUDA: mul_
     MkldnnCPU: mkldnn_mul_
 
 - func: mul(Tensor self, Tensor other, *, Tensor(a!) out) -> Tensor(a!)
