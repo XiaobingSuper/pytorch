@@ -71,10 +71,10 @@ std::tuple<Tensor, Tensor, Tensor> mkldnn_batch_norm(
     if (use_running_stat) {
       ideep::tensor m = itensor_view_from_dense(running_mean);
       ideep::tensor v = itensor_view_from_dense(running_var);
-      ideep::batch_normalization_forward_training::compute<AllocForMKLDNN>(
+      ideep::batch_normalization_forward_training::compute<ideep::utils::scratch_allocator>(
           x, w, b, y, saved_mean, saved_var, m, v, momentum, eps);
     } else {
-      ideep::batch_normalization_forward_training::compute<AllocForMKLDNN>(
+      ideep::batch_normalization_forward_training::compute<ideep::utils::scratch_allocator>(
           x, w, b, y, saved_mean, saved_var, momentum, eps);
     }
     return std::make_tuple(
@@ -85,10 +85,10 @@ std::tuple<Tensor, Tensor, Tensor> mkldnn_batch_norm(
     if (use_running_stat) {
       ideep::tensor m = get_mkldnn_tensor(running_mean);
       ideep::tensor v = get_mkldnn_tensor(running_var);
-      ideep::batch_normalization_forward_inference::compute<AllocForMKLDNN>(
+      ideep::batch_normalization_forward_inference::compute<ideep::utils::scratch_allocator>(
           x, m, v, w, b, y, eps);
     } else {
-      ideep::batch_normalization_forward_inference::compute<AllocForMKLDNN>(
+      ideep::batch_normalization_forward_inference::compute<ideep::utils::scratch_allocator>(
           x, w, b, y, eps);
     }
     return std::make_tuple(
@@ -117,7 +117,7 @@ std::tuple<Tensor, Tensor, Tensor> mkldnn_batch_norm_backward(const Tensor& grad
   ideep::tensor& v = itensor_from_mkldnn(save_invstd);
 
   ideep::tensor gradx, gradw, gradb;
-  ideep::batch_normalization_backward::compute<AllocForMKLDNN>(
+  ideep::batch_normalization_backward::compute<ideep::utils::scratch_allocator>(
       x, m, v, grady, w, gradx, gradw, gradb, eps);
 
   if (weight.is_mkldnn()) {

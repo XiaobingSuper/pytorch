@@ -28,14 +28,14 @@ namespace native {
 Tensor mkldnn_sigmoid(const Tensor& self) {
   ideep::tensor& x = itensor_from_mkldnn(self);
   ideep::tensor y;
-  ideep::eltwise_forward::compute(
+  ideep::eltwise_forward::compute<ideep::utils::scratch_allocator>(
       x, y, ideep::algorithm::eltwise_logistic, ideep::prop_kind::forward);
   return new_with_itensor_mkldnn(std::move(y), self.options());
 }
 
 Tensor& mkldnn_sigmoid_(Tensor& self) {
   ideep::tensor& x = itensor_from_mkldnn(self);
-  ideep::eltwise_forward::compute(
+  ideep::eltwise_forward::compute<ideep::utils::scratch_allocator>(
       x, x, ideep::algorithm::eltwise_logistic, ideep::prop_kind::forward);
   return self;
 }

@@ -50,9 +50,9 @@ Tensor mkldnn_linear(
   ideep::tensor y;
   if (bias.defined()) {
     const ideep::tensor b = get_mkldnn_tensor(bias);
-    ideep::inner_product_forward::compute(x, w, b, y);
+    ideep::inner_product_forward::compute<ideep::utils::scratch_allocator>(x, w, b, y);
   } else {
-    ideep::inner_product_forward::compute(x, w, y);
+    ideep::inner_product_forward::compute<ideep::utils::scratch_allocator>(x, w, y);
   }
 
   return new_with_itensor_mkldnn(std::move(y), self.options());
@@ -64,7 +64,7 @@ Tensor mkldnn_linear_backward_input(
   const ideep::tensor w = itensor_view_from_dense(weight);
 
   ideep::tensor gradx;
-  ideep::inner_product_backward_data::compute(grady, w, {input_size.begin(), input_size.end()}, gradx);
+  ideep::inner_product_backward_data::compute<ideep::utils::scratch_allocator>(grady, w, {input_size.begin(), input_size.end()}, gradx);
 
   return new_with_itensor_mkldnn(std::move(gradx), grad_output.options());
 }
@@ -75,9 +75,9 @@ std::tuple<Tensor, Tensor> mkldnn_linear_backward_weights(
   ideep::tensor& x = itensor_from_mkldnn(input);
   ideep::tensor gradw, gradb;
   if (bias_defined) {
-    ideep::inner_product_backward_weights::compute(x, grady, gradw, gradb);
+    ideep::inner_product_backward_weights::compute<ideep::utils::scratch_allocator>(x, grady, gradw, gradb);
   } else {
-    ideep::inner_product_backward_weights::compute(x, grady, gradw);
+    ideep::inner_product_backward_weights::compute<ideep::utils::scratch_allocator>(x, grady, gradw);
   }
 
   if (weight.is_mkldnn()) {

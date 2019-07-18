@@ -69,7 +69,7 @@ ideep::tensor _mkldnn_conv2d(
 
   ideep::tensor y;
   if (b.has_value()) {
-    ideep::convolution_forward::compute<AllocForMKLDNN>(
+    ideep::convolution_forward::compute<ideep::utils::scratch_allocator>(
         x,
         w,
         b.value(),
@@ -84,7 +84,7 @@ ideep::tensor _mkldnn_conv2d(
         ideep::algorithm::convolution_direct,
         ideep::prop_kind::forward);
   } else {
-    ideep::convolution_forward::compute<AllocForMKLDNN>(
+    ideep::convolution_forward::compute<ideep::utils::scratch_allocator>(
       x,
       w,
       {output_sizes.cbegin(), output_sizes.cend()},
@@ -111,7 +111,7 @@ ideep::tensor _mkldnn_conv2d_backward_input(
     int64_t groups) {
 
   ideep::tensor gradx;
-  ideep::convolution_backward_data::compute<AllocForMKLDNN>(
+  ideep::convolution_backward_data::compute<ideep::utils::scratch_allocator>(
       grady,
       w,
       {input_sizes.cbegin(), input_sizes.cend()},
@@ -138,7 +138,7 @@ std::tuple<ideep::tensor, ideep::tensor> _mkldnn_conv2d_backward_weights(
 
   ideep::tensor gradw, gradb;
   if (bias_defined) {
-    ideep::convolution_backward_weights::compute<AllocForMKLDNN>(
+    ideep::convolution_backward_weights::compute<ideep::utils::scratch_allocator>(
         x,
         grady,
         {weight_sizes.cbegin(), weight_sizes.cend()},
@@ -151,7 +151,7 @@ std::tuple<ideep::tensor, ideep::tensor> _mkldnn_conv2d_backward_weights(
         groups,
         ideep::algorithm::convolution_direct);
   } else {
-    ideep::convolution_backward_weights::compute<AllocForMKLDNN>(
+    ideep::convolution_backward_weights::compute<ideep::utils::scratch_allocator>(
         x,
         grady,
         {weight_sizes.cbegin(), weight_sizes.cend()},

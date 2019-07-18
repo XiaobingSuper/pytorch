@@ -68,7 +68,7 @@ Tensor mkldnn_reorder_conv2d_weight(
           groups,
           ideep::algorithm::convolution_direct);
   ideep::tensor result;
-  result.init<AllocForMKLDNN>(desc);
+  result.init<ideep::utils::scratch_allocator>(desc);
   result.feed_from(w);
 
   return new_with_itensor_mkldnn(std::move(result), self.options());
