@@ -10,6 +10,13 @@ import caffe2.python.hypothesis_test_util as hu
 from caffe2.python import core, workspace
 from hypothesis import given, settings
 import caffe2.python.ideep_test_util as mu
+import hypothesis
+def no_deadline(fn):
+    try:
+        return hypothesis.settings(deadline=None)(fn)
+    except hypothesis.errors.InvalidArgument:
+        return
+
 
 @st.composite
 def _tensor_splits(draw, add_axis=False):
@@ -47,6 +54,7 @@ def _tensor_splits(draw, add_axis=False):
 
 @unittest.skipIf(not workspace.C.use_mkldnn, "No MKLDNN support.")
 class TestConcatSplitOps(hu.HypothesisTestCase):
+    @no_deadline
     @given(tensor_splits=_tensor_splits(),
            **mu.gcs)
     def test_concat(self, tensor_splits, gc, dc):
@@ -62,6 +70,7 @@ class TestConcatSplitOps(hu.HypothesisTestCase):
         self.assertDeviceChecks(dc, op, splits, [0, 1])
         self.assertGradientChecks(gc, op, splits, 0, [0])
 
+    @no_deadline
     @given(tensor_splits=_tensor_splits(),
            split_as_arg=st.booleans(),
            **mu.gcs)
@@ -96,6 +105,7 @@ class TestConcatSplitOps(hu.HypothesisTestCase):
         self.assertDeviceChecks(dc, op, input_tensors, outputs_with_grad)
         self.assertGradientChecks(gc, op, input_tensors, 0, outputs_with_grad)
 
+    @no_deadline
     @given(tensor_splits=_tensor_splits(add_axis=True), **mu.gcs)
     def test_concat_add_axis(self, tensor_splits, gc, dc):
         axis, _, splits = tensor_splits
@@ -112,7 +122,7 @@ class TestConcatSplitOps(hu.HypothesisTestCase):
         for i in range(len(splits)):
             self.assertGradientChecks(gc, op, splits, i, [0])
 
-
+    @no_deadline
     @given(tensor_splits=_tensor_splits(add_axis=True), **mu.gcs)
     def test_concat_with_TensorCPU(self, tensor_splits, gc, dc):
         axis, _, splits = tensor_splits

@@ -181,8 +181,7 @@ auto ConvParams::use_mkldnn(const at::Tensor& input) const -> bool {
   }
   return (input.is_mkldnn()) || // input is mkldnn Tensor
     (input.type().backend() == at::Backend::CPU &&
-     input.scalar_type() == kFloat && // only on CPU Float Tensors
-     !transposed); // must be in NCHW format
+     input.scalar_type() == kFloat); // only on CPU Float Tensors // must be in NCHW format
 #endif
   return false;
 }
@@ -627,25 +626,34 @@ at::Tensor _convolution(
           params.padding, params.stride, params.dilation, params.groups, params.benchmark, params.deterministic);
     }
   } else if (params.use_mkldnn(input)) {
-#if AT_MKLDNN_ENABLED()
     TORCH_CHECK(input.type() == weight.type()
-                || (input.is_mkldnn() && weight.type().backend() == at::Backend::CPU && weight.scalar_type() == kFloat),
-             "Input type (", input.type().toString(), ") and weight type (", weight.type().toString(),
-             ") should be the same");
+               || (input.is_mkldnn() && weight.type().backend() == at::Backend::CPU && weight.scalar_type() == kFloat),
+               "Input type (", input.type().toString(), ") and weight type (", weight.type().toString(),
+               ") should be the same");
     TORCH_CHECK(!bias.defined() || (input.type() == bias.type())
                 || (input.is_mkldnn() && bias.type().backend() == at::Backend::CPU && bias.scalar_type() == kFloat),
-             "Input type (", input.type().toString(), ") and bias type (", bias.type().toString(),
-             ") should be the same");
-    if (!input_is_mkldnn) {
-      output = at::mkldnn_convolution(input, weight.contiguous(), bias.defined() ? bias.contiguous() : bias,
-                                      params.padding, params.stride, params.dilation, params.groups);
+               "Input type (", input.type().toString(), ") and bias type (", bias.type().toString(),
+               ") should be the same");
+    if (params.transposed) {
+      if (!input_is_mkldnn) {
+        output = at::mkldnn_convolution_transpose(input, weight.contiguous(), bias.defined() ? bias.contiguous() : bias,
+            params.padding, params.output_padding, params.stride, params.dilation, params.groups);
+      } else {
+        // do not call contiguous on mkldnn tensor
+        output = at::mkldnn_convolution_transpose(input, weight, bias,
+            params.padding, params.output_padding, params.stride, params.dilation, params.groups);
+      }
     } else {
-      // do not call contiguous on mkldnn tensor
-      output = at::mkldnn_convolution(input, weight, bias,
-                                      params.padding, params.stride, params.dilation, params.groups);
+      if (!input_is_mkldnn) {
+        output = at::mkldnn_convolution(input, weight.contiguous(), bias.defined() ? bias.contiguous() : bias,
+                                        params.padding, params.stride, params.dilation, params.groups);
+      } else {
+        // do not call contiguous on mkldnn tensor
+        output = at::mkldnn_convolution(input, weight, bias,
+                                        params.padding, params.stride, params.dilation, params.groups);
+      }
     }
-#endif
-  } else if (input.device().type() == c10::DeviceType::CPU || input.device().type() == c10::DeviceType::CUDA) {
+ } else if (input.device().type() == c10::DeviceType::CPU || input.device().type() == c10::DeviceType::CUDA) {
     if (params.use_cpu_depthwise3x3_winograd(input, weight)) {
       output = convolution_depthwise3x3_winograd_stub(
         input.device().type(), input, weight, bias, params.padding, params.stride, params.groups);
