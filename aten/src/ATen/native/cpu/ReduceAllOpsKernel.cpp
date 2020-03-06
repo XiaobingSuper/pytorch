@@ -77,9 +77,29 @@ static void max_all_kernel_impl(Tensor& result, const Tensor& input) {
   }
 }
 
+static void sum_all_kernel_impl(Tensor& result, const Tensor& input) {
+  AT_DISPATCH_ALL_TYPES_AND_COMPLEX(input.scalar_type(), "sum_all", [&] {
+    using Vec = vec256::Vec256<scalar_t>;
+    reduce_all_impl<scalar_t>(result, input, 0,
+      [=] (scalar_t a , scalar_t b) -> scalar_t { return a + b; },
+      [=](Vec a, Vec b) -> Vec { return a + b; });
+  });
+}
+
+static void prod_all_kernel_impl(Tensor& result, const Tensor& input) {
+  AT_DISPATCH_ALL_TYPES_AND_COMPLEX(input.scalar_type(), "prod_all", [&] {
+    using Vec = vec256::Vec256<scalar_t>;
+    reduce_all_impl<scalar_t>(result, input, 1,
+      [=] (scalar_t a , scalar_t b) -> scalar_t { return a * b; },
+      [=](Vec a, Vec b) -> Vec { return a * b; });
+  });
+}
+
 } // namespace
 
 REGISTER_DISPATCH(min_all_stub, &min_all_kernel_impl);
 REGISTER_DISPATCH(max_all_stub, &max_all_kernel_impl);
+REGISTER_DISPATCH(sum_all_stub, &sum_all_kernel_impl);
+REGISTER_DISPATCH(prod_all_stub, &prod_all_kernel_impl);
 
 }}

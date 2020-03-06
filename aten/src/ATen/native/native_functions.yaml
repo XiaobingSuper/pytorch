@@ -2610,6 +2610,9 @@
 
 - func: sum(Tensor self, *, ScalarType? dtype=None) -> Tensor
   variants: function, method
+  dispatch:
+    CPU: sum_cpu
+    CUDA: sum
   supports_named_tensor: True
 
 - func: sum.dim_IntList(Tensor self, int[1] dim, bool keepdim=False, *, ScalarType? dtype=None) -> Tensor
@@ -2684,6 +2687,9 @@
 
 - func: prod(Tensor self, *, ScalarType? dtype=None) -> Tensor
   variants: function, method
+  dispatch:
+    CPU: prod_cpu
+    CUDA: prod
   supports_named_tensor: True
 
 - func: prod.dim_int(Tensor self, int dim, bool keepdim=False, *, ScalarType? dtype=None) -> Tensor
