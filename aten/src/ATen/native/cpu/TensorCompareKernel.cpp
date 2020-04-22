@@ -3,6 +3,7 @@
 #include <numeric>
 #include <iterator>
 #include <algorithm>
+#include <math.h>
 
 #include <ATen/Dispatch.h>
 #include <ATen/Parallel.h>
@@ -12,6 +13,7 @@
 #include <ATen/native/ReduceOpsUtils.h>
 #include <ATen/native/cpu/zmath.h>
 #include <ATen/native/cpu/Loops.h>
+#include <ATen/cpu/vec256/vec256.h>
 
 namespace at { namespace native { namespace {
 
@@ -82,30 +84,130 @@ static void min_kernel_impl(
     bool keepdim) {
   auto wrap_dim = maybe_wrap_dim(dim, self.dim());
   int64_t self_dim_size = ensure_nonempty_size(self, wrap_dim);
-
-  AT_DISPATCH_ALL_TYPES_AND_COMPLEX_AND(ScalarType::Bool, self.scalar_type(), "min_cpu", [&] {
-    compare_base_kernel<scalar_t>(result, indice, self, wrap_dim, keepdim, [&] (
-      scalar_t* result_data, int64_t* indice_data,
-      const scalar_t* self_data, auto self_dim_stride) {
-        using value_t = typename ztype<scalar_t>::value_t;
-        value_t (*zabs_)(scalar_t) = zabs<scalar_t, value_t>;
-        scalar_t min_number = self_data[0];
-        int64_t index = 0;
-        for (int64_t i = 0; i < self_dim_size; ++i) {
-          scalar_t value = self_data[i * self_dim_stride];
-          if (!(zabs_(value) >= zabs_(min_number))) {
-            min_number = value;
-            index = i;
-            if (_isnan<scalar_t>(value)) {
-              break;
+  if ((self.scalar_type() == ScalarType::Bool) || (self.scalar_type() == ScalarType::ComplexFloat)
+      || (self.scalar_type() == ScalarType::ComplexDouble)) {
+    AT_DISPATCH_COMPLEX_TYPES_AND(ScalarType::Bool, self.scalar_type(), "min_cpu", [&] {
+      compare_base_kernel<scalar_t>(result, indice, self, wrap_dim, keepdim, [&] (
+        scalar_t* result_data, int64_t* indice_data,
+        const scalar_t* self_data, auto self_dim_stride) {
+          using value_t = typename ztype<scalar_t>::value_t;
+          value_t (*zabs_)(scalar_t) = zabs<scalar_t, value_t>;
+          scalar_t min_number = self_data[0];
+          int64_t index = 0;
+          for (int64_t i = 0; i < self_dim_size; ++i) {
+             scalar_t value = self_data[i * self_dim_stride];
+             if (!(zabs_(value) >= zabs_(min_number))) {
+               min_number = value;
+               index = i;
+               if (_isnan<scalar_t>(value)) {
+                 break;
+               }
+             }
+          }
+          *result_data = min_number;
+          *indice_data = index;
+        }
+      );
+    });
+  } else {
+    AT_DISPATCH_ALL_TYPES(self.scalar_type(), "min_cpu", [&] {
+      compare_base_kernel<scalar_t>(result, indice, self, wrap_dim, keepdim, [&] (
+        scalar_t* result_data, int64_t* indice_data,
+        const scalar_t* self_data, auto self_dim_stride) {
+          using Vec = Vec256<scalar_t>; 
+          if (self_dim_size < Vec::size()) {
+            scalar_t min_number = self_data[0];
+            int64_t index = 0;
+            for (int64_t i = 0; i < self_dim_size; ++i) {
+              scalar_t value = self_data[i * self_dim_stride];
+              if (!(value >= min_number)) {
+                min_number = value;
+                index = i;
+                if (_isnan<scalar_t>(value)) {
+                  break;
+                }
+              }
             }
+            *result_data = min_number;
+            *indice_data = index;
+          } else {
+            int64_t d = Vec::size();
+            const Vec increment_vec(static_cast<scalar_t>(Vec::size())); 
+            scalar_t indice_values[Vec::size()], min_values[Vec::size()];
+            for (int64_t i = 0; i < Vec::size(); i++) {
+              indice_values[i] = i;
+              min_values[i] = self_data[i * self_dim_stride];
+            }
+            Vec indices_vec = Vec::loadu(&indice_values);
+            Vec min_indice_vec = indices_vec;
+            Vec min_values_vec = Vec::loadu(&min_values);
+            for (; d < self_dim_size - (self_dim_size % Vec::size()); d += Vec::size()) {
+              // load data
+              /* 
+              scalar_t values[8]={self_data[(d + 0)* self_dim_stride],
+                self_data[(d + 1)* self_dim_stride],
+                self_data[(d + 2)* self_dim_stride],
+                self_data[(d + 3)* self_dim_stride],
+                self_data[(d + 4)* self_dim_stride],
+                self_data[(d + 5)* self_dim_stride],
+                self_data[(d + 6)* self_dim_stride],
+                self_data[(d + 7)* self_dim_stride],
+                };
+              */
+              //std::cout<<*(self_data+self_dim_stride*d)<<std::endl;
+              //std::cout<<*(self_data+self_dim_stride*d + self_dim_stride)<<std::endl;
+              scalar_t values[8];
+               
+              for (int64_t i = 0; i < Vec::size(); i++) {
+                values[i] = *self_data;
+                  //values[i] = self_data[(d + i)* self_dim_stride];
+              }
+              Vec values_vec = Vec::loadu(&values); 
+              //Vec values_vec = Vec::loadu(self_data + d);
+              indices_vec = indices_vec + increment_vec;
+
+              Vec mask = min_values_vec < values_vec;
+              min_indice_vec = Vec::blendv(indices_vec, min_indice_vec, mask);
+              min_values_vec = Vec::blendv(values_vec, min_values_vec, mask);
+              //min_values_vec = vec256::minimum(min_values_vec, values_vec);
+            }
+            if (self_dim_size - d > 0) {
+              scalar_t values[8];  
+              int64_t i = 0;
+              for (; i < self_dim_size - d; i++) {
+                values[i] = self_data[(d + i)* self_dim_stride];
+              }
+              for (; i < Vec::size(); i++){
+                 values[i] = 10000;
+              }
+              Vec values_vec = Vec::loadu(&values);
+              indices_vec = indices_vec + increment_vec;
+              Vec mask = min_values_vec < values_vec;
+              min_indice_vec = Vec::blendv(indices_vec, min_indice_vec, mask);
+              min_values_vec = Vec::blendv(values_vec, min_values_vec, mask);
+              //min_values_vec = vec256::minimum(min_values_vec, values_vec);
+            }
+            // find min value and indice
+            min_values_vec.store(&min_values);
+            min_indice_vec.store(&indice_values);
+            scalar_t min_number = min_values[0];
+            scalar_t min_indice = indice_values[0];
+            for (int64_t j = 0; j < Vec::size(); j++) {
+              if (!(min_values[j] >= min_number)) {
+                min_number = min_values[j];
+                min_indice = indice_values[j];
+                if (_isnan<scalar_t>(min_values[j])) {
+                  break;
+                }
+              }
+            }
+            *result_data = min_number;
+            *indice_data = (int64_t)min_indice;
           }
         }
-        *result_data = min_number;
-        *indice_data = index;
-      }
-    );
-  });
+      );
+    });
+  }
 }
 
 static void max_kernel_impl(
