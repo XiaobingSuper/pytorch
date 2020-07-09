@@ -12,7 +12,7 @@ namespace native {
 namespace {
 
 template <typename scalar_t>
-static void max_pool2d_with_indices_single_out_frame(
+static void max_pool2d_with_indices_out_frame(
           scalar_t *input_p,
           scalar_t *output_p,
           int64_t *ind_p,
@@ -31,12 +31,14 @@ static void max_pool2d_with_indices_single_out_frame(
           int dilationH
           )
 {
+  const int64_t istride = iwidth * iheight;
+  const int64_t ostride = owidth * oheight;
   at::parallel_for(0, nslices, 0, [&](int64_t start, int64_t end) {
     for (auto k = start; k < end; k++)
     {
       /* loop over output */
       int64_t i, j;
-      scalar_t *ip = input_p   + k*iwidth*iheight;
+      scalar_t *ip = input_p + k * istride;
       for(i = 0; i < oheight; i++)
       {
         for(j = 0; j < owidth; j++)
@@ -51,17 +53,17 @@ static void max_pool2d_with_indices_single_out_frame(
             wstart += dilationW;
 
           /* local pointers */
-          scalar_t *op = output_p  + k*owidth*oheight + i*owidth + j;
-          int64_t *indp = ind_p   + k*owidth*oheight + i*owidth + j;
+          scalar_t *op = output_p + k * ostride + i * owidth + j;
+          int64_t *indp = ind_p + k * ostride + i * owidth + j;
 
           /* compute local max: */
-          int64_t maxindex = hstart*iwidth + wstart;
+          int64_t maxindex = hstart * iwidth + wstart;
           scalar_t maxval = -std::numeric_limits<scalar_t>::infinity();
           for(int64_t y = hstart; y < hend; y += dilationH)
           {
             for(int64_t x = wstart; x < wend; x += dilationW)
             {
-              int64_t tcntr = y*iwidth + x;
+              int64_t tcntr = y * iwidth + x;
               scalar_t val = *(ip + tcntr);
               if ((val > maxval) || std::isnan(val))
               {
@@ -78,42 +80,6 @@ static void max_pool2d_with_indices_single_out_frame(
           *indp = maxindex;
         }
       }
-    }
-  });
-}
-
-template <typename scalar_t>
-static void max_pool2d_with_indices_out_frame(
-          scalar_t *input_data,
-          scalar_t *output_data,
-          int64_t *indices_data,
-          int64_t nbatch,
-          int64_t nInputPlane,
-          int64_t inputWidth,
-          int64_t inputHeight,
-          int64_t outputWidth,
-          int64_t outputHeight,
-          int kW,
-          int kH,
-          int dW,
-          int dH,
-          int padW,
-          int padH,
-          int dilationW,
-          int dilationH)
-{
-  at::parallel_for(0, nbatch, 0, [&](int64_t start, int64_t end) {
-    for (auto p = start; p < end; p++) {
-      max_pool2d_with_indices_single_out_frame(
-        input_data+p*nInputPlane*inputWidth*inputHeight,
-        output_data+p*nInputPlane*outputWidth*outputHeight,
-        indices_data+p*nInputPlane*outputWidth*outputHeight,
-        nInputPlane,
-        inputWidth, inputHeight,
-        outputWidth, outputHeight,
-        kW, kH, dW, dH,
-        padW, padH,
-        dilationW, dilationH);
     }
   });
 }
@@ -175,62 +141,38 @@ void max_pool2d_with_indices_out_cpu_template(
   Tensor input = input_.contiguous();
 
   /* resize output */
-  if (input.ndimension() == 3)
-  {
+  if (input.ndimension() == 3) {
     output.resize_({nInputPlane, outputHeight, outputWidth});
     /* indices will contain the locations for each output point */
     indices.resize_({nInputPlane, outputHeight, outputWidth});
-
-    AT_DISPATCH_FLOATING_TYPES(input.scalar_type(),
-      "max_pool2d_with_indices_cpu",
-      [&] {
-        /* get raw pointers */
-        scalar_t *input_data = input.data_ptr<scalar_t>();
-        scalar_t *output_data = output.data_ptr<scalar_t>();
-        int64_t *indices_data = indices.data_ptr<int64_t>();
-
-        max_pool2d_with_indices_single_out_frame(
-          input_data, output_data,
-          indices_data,
-          nInputPlane,
-          inputWidth, inputHeight,
-          outputWidth, outputHeight,
-          kW, kH, dW, dH,
-          padW, padH,
-          dilationW, dilationH);
-      }
-    );
-  }
-  else
-  {
+  } else {
     output.resize_({nbatch, nInputPlane, outputHeight, outputWidth});
     /* indices will contain the locations for each output point */
     indices.resize_({nbatch, nInputPlane, outputHeight, outputWidth});
-
-    AT_DISPATCH_FLOATING_TYPES(input.scalar_type(),
-      "max_pool2d_with_indices_cpu",
-      [&] {
-        scalar_t *input_data = input.data_ptr<scalar_t>();
-        scalar_t *output_data = output.data_ptr<scalar_t>();
-        int64_t *indices_data = indices.data_ptr<int64_t>();
-
-        max_pool2d_with_indices_out_frame(
-          input_data,
-          output_data,
-          indices_data,
-          nbatch,
-          nInputPlane,
-          inputWidth, inputHeight,
-          outputWidth, outputHeight,
-          kW, kH, dW, dH,
-          padW, padH,
-          dilationW, dilationH); }
-    );
   }
+
+  AT_DISPATCH_FLOATING_TYPES(input.scalar_type(),
+    "max_pool2d_with_indices_cpu",
+    [&] {
+    /* get raw pointers */
+    scalar_t *input_data = input.data_ptr<scalar_t>();
+    scalar_t *output_data = output.data_ptr<scalar_t>();
+    int64_t *indices_data = indices.data_ptr<int64_t>();
+
+    max_pool2d_with_indices_out_frame(
+      input_data, output_data,
+      indices_data,
+      nbatch * nInputPlane,
+      inputWidth, inputHeight,
+      outputWidth, outputHeight,
+      kW, kH, dW, dH,
+      padW, padH,
+      dilationW, dilationH);
+  });
 }
 
 template <typename scalar_t>
-static void max_pool2d_with_indices_backward_single_out_frame(
+static void max_pool2d_with_indices_backward_out_frame(
           scalar_t *gradInput_p,
           scalar_t *gradOutput_p,
           int64_t *ind_p,
@@ -242,12 +184,14 @@ static void max_pool2d_with_indices_backward_single_out_frame(
           int dW,
           int dH)
 {
+  const int64_t istride = inputWidth * inputHeight;
+  const int64_t ostride = outputWidth * outputHeight;
   at::parallel_for(0, nInputPlane, 0, [&](int64_t start, int64_t end) {
     for (auto k = start; k < end; k++)
     {
-      scalar_t *gradInput_p_k = gradInput_p + k*inputWidth*inputHeight;
-      scalar_t *gradOutput_p_k = gradOutput_p + k*outputWidth*outputHeight;
-      int64_t *ind_p_k = ind_p + k*outputWidth*outputHeight;
+      scalar_t *gradInput_p_k = gradInput_p + k * istride;
+      scalar_t *gradOutput_p_k = gradOutput_p + k * ostride;
+      int64_t *ind_p_k = ind_p + k * ostride;
 
       /* calculate max points */
       int64_t i, j;
@@ -256,41 +200,13 @@ static void max_pool2d_with_indices_backward_single_out_frame(
         for(j = 0; j < outputWidth; j++)
         {
           /* retrieve position of max */
-          int64_t maxp = ind_p_k[i*outputWidth + j];
+          int64_t maxp = ind_p_k[i * outputWidth + j];
           if (maxp != -1) {
             /* update gradient */
-            gradInput_p_k[maxp] += gradOutput_p_k[i*outputWidth + j];
+            gradInput_p_k[maxp] += gradOutput_p_k[i * outputWidth + j];
           }
         }
       }
-    }
-  });
-}
-
-template <typename scalar_t>
-static void max_pool2d_with_indices_backward_out_frame(
-          scalar_t *gradInput_data,
-          scalar_t *gradOutput_data,
-          int64_t *indices_data,
-          int64_t nbatch,
-          int64_t nInputPlane,
-          int64_t inputWidth,
-          int64_t inputHeight,
-          int64_t outputWidth,
-          int64_t outputHeight,
-          int dW,
-          int dH)
-{
-  at::parallel_for(0, nbatch, 0, [&](int64_t start, int64_t end) {
-    for (auto p = start; p < end; p++) {
-      max_pool2d_with_indices_backward_single_out_frame<scalar_t>(
-        gradInput_data+p*nInputPlane*inputWidth*inputHeight,
-        gradOutput_data+p*nInputPlane*outputWidth*outputHeight,
-        indices_data+p*nInputPlane*outputWidth*outputHeight,
-        nInputPlane,
-        inputWidth, inputHeight,
-        outputWidth, outputHeight,
-        dW, dH);
     }
   });
 }
@@ -363,48 +279,22 @@ Tensor& max_pool2d_with_indices_backward_out_cpu_template(
     outputHeight_for_shape_check, outputWidth_for_shape_check);
 
   /* backprop */
-  if (input.ndimension() == 3)
-  {
-    AT_DISPATCH_FLOATING_TYPES(input.scalar_type(),
-      "max_pool2d_with_indices_backward",
-      [&] {
-        /* get raw pointers */
-        scalar_t *gradInput_data = gradInput.data_ptr<scalar_t>();
-        scalar_t *gradOutput_data = gradOutput.data_ptr<scalar_t>();
-        int64_t *indices_data = indices.data_ptr<int64_t>();
+  AT_DISPATCH_FLOATING_TYPES(input.scalar_type(),
+    "max_pool2d_with_indices_backward",
+    [&] {
+    /* get raw pointers */
+      scalar_t *gradInput_data = gradInput.data_ptr<scalar_t>();
+      scalar_t *gradOutput_data = gradOutput.data_ptr<scalar_t>();
+      int64_t *indices_data = indices.data_ptr<int64_t>();
 
-        max_pool2d_with_indices_backward_single_out_frame(
-          gradInput_data, gradOutput_data,
-          indices_data,
-          nInputPlane,
-          inputWidth, inputHeight,
-          outputWidth, outputHeight,
-          dW, dH);
-      }
-    );
-  }
-  else
-  {
-    AT_DISPATCH_FLOATING_TYPES(input.scalar_type(),
-      "max_pool2d_with_indices_backward",
-      [&] {
-        /* get raw pointers */
-        scalar_t *gradInput_data = gradInput.data_ptr<scalar_t>();
-        scalar_t *gradOutput_data = gradOutput.data_ptr<scalar_t>();
-        int64_t *indices_data = indices.data_ptr<int64_t>();
-
-        max_pool2d_with_indices_backward_out_frame<scalar_t>(
-          gradInput_data, gradOutput_data,
-          indices_data,
-          nbatch,
-          nInputPlane,
-          inputWidth, inputHeight,
-          outputWidth, outputHeight,
-          dW, dH);
-      }
-    );
-  }
-
+      max_pool2d_with_indices_backward_out_frame(
+        gradInput_data, gradOutput_data,
+        indices_data,
+        nbatch * nInputPlane,
+        inputWidth, inputHeight,
+        outputWidth, outputHeight,
+        dW, dH);
+    });
   return gradInput;
 }
 
