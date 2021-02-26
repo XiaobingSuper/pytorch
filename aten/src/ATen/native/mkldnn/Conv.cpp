@@ -40,24 +40,20 @@ std::tuple<Tensor, Tensor, Tensor> mkldnn_convolution_backward(
 
 namespace at { namespace native {
 
-ideep::tensor _mkldnn_convolution(
+template <bool plain_format = false>
+static void _mkldnn_convolution(
     const ideep::tensor& x,
     const ideep::tensor& w,
+    ideep::tensor& y,
     const c10::optional<ideep::tensor>& b,
     IntArrayRef padding,
     IntArrayRef stride,
     IntArrayRef dilation,
+    const std::vector<int64_t>& output_sizes,
     int64_t groups) {
 
-  auto kernel_size = w.get_dims();
-
-  std::vector<int64_t> input_size = x.get_dims();
-  std::vector<int64_t> output_sizes =
-      conv_output_size(input_size, kernel_size, padding, stride, dilation);
-
-  ideep::tensor y;
   if (b.has_value()) {
-    ideep::convolution_forward::compute(
+    ideep::convolution_forward::compute<plain_format>(
         x,
         w,
         b.value(),
@@ -69,7 +65,7 @@ ideep::tensor _mkldnn_convolution(
         {padding.begin(), padding.end()},
         groups);
   } else {
-    ideep::convolution_forward::compute(
+    ideep::convolution_forward::compute<plain_format>(
         x,
         w,
         {output_sizes.cbegin(), output_sizes.cend()},
@@ -80,7 +76,6 @@ ideep::tensor _mkldnn_convolution(
         {padding.begin(), padding.end()},
         groups);
   }
-  return y;
 }
 
 Tensor mkldnn_convolution(
@@ -102,22 +97,42 @@ Tensor mkldnn_convolution(
     mkldnn_bias = itensor_from_tensor(bias);
   }
 
-  ideep::tensor mkldnn_output = _mkldnn_convolution(
+  auto kernel_size = mkldnn_weight.get_dims();
+
+  std::vector<int64_t> input_size = mkldnn_input.get_dims();
+  const std::vector<int64_t> output_sizes =
+      conv_output_size(input_size, kernel_size, padding, stride, dilation);
+
+  if (input.is_mkldnn()) {
+    ideep::tensor mkldnn_output;
+
+    _mkldnn_convolution</*plain_format=*/false>(
       mkldnn_input,
       mkldnn_weight,
+      mkldnn_output,
       mkldnn_bias,
       padding,
       stride,
       dilation,
+      output_sizes,
       groups);
-
-  if (input.is_mkldnn()) {
     return new_with_itensor_mkldnn(std::move(mkldnn_output), optTypeMetaToScalarType(input.options().dtype_opt()),
                                    input.options().device_opt());
   } else {
-    return mkldnn_to_dense(
-        new_with_itensor_mkldnn(std::move(mkldnn_output), optTypeMetaToScalarType(input.options().dtype_opt()),
-                                input.options().device_opt()));
+    auto result = at::empty(output_sizes, input.options());
+    ideep::tensor mkldnn_output = itensor_view_from_dense(result);
+
+    _mkldnn_convolution</*plain_format=*/true>(
+      mkldnn_input,
+      mkldnn_weight,
+      mkldnn_output,
+      mkldnn_bias,
+      padding,
+      stride,
+      dilation,
+      output_sizes,
+      groups);
+    return result;
   }
 }
 
