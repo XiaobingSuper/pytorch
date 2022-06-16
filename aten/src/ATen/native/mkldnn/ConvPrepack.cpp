@@ -17,6 +17,8 @@ namespace mkldnn {
 namespace internal {
 namespace convolution {
 
+using torch::jit::mkldnn::fusion_attr_map;
+
 c10::intrusive_ptr<mkldnn::ConvOpContext> createConvPrePackOpContext(
     Tensor weight,
     c10::optional<Tensor> bias,
@@ -29,7 +31,6 @@ c10::intrusive_ptr<mkldnn::ConvOpContext> createConvPrePackOpContext(
   auto it = fusion_attr_map.find(attr);
   TORCH_CHECK(it != fusion_attr_map.end(), "Fusion behavior undefined.");
   ideep::attr_t op_attr = it->second;
-
   return mkldnn::MkldnnConvOpContext::create_context(
       std::move(weight),
       std::move(bias),
