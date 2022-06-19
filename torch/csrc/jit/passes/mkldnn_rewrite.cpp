@@ -167,6 +167,79 @@ void FuseReluWithPackedOps(std::shared_ptr<Graph>& graph) {
   }
 }
 
+void FuseBinaryWithPackedOps(std::shared_ptr<Graph>& graph) {
+  auto conv_op_rstring = at::jit::CodeTemplate(R"(
+    graph(%input, %weight, %bias, %other, %alpha, %stride:int[], %padding:int[],
+          %dilation:int[], %groups:int, %input_size:int[], %dummy_attr:str):
+        %packed_weight_bias = mkldnn_prepacked::conv2d_prepack(
+            %weight, %bias, %stride, %padding, %dilation, %groups,
+            %input_size, %dummy_attr)
+        %conv2d_res = mkldnn_prepacked::conv2d_run(%input, %packed_weight_bias)
+        %res = aten::${op}(%conv2d_res, %other, %alpha)
+        return (%res))");
+
+  auto conv_op_fused_rstring = at::jit::CodeTemplate(R"(
+    graph(%input, %weight, %bias, %other, %alpha, %stride:int[], %padding:int[],
+          %dilation:int[], %groups:int, %input_size:int[], %dummy_attr:str):
+        %attr: str = prim::Constant[value="${op_attr}"]()
+        %packed_weight_bias : __torch__.torch.classes.mkldnn.ConvOpContext = mkldnn_prepacked::conv2d_prepack(
+            %weight, %bias, %stride, %padding, %dilation, %groups,
+            %input_size, %attr)
+        %res = mkldnn_prepacked::conv2d_binary_run(%input, %other, %packed_weight_bias)
+        return (%res))");
+
+  for (auto const& it : mkldnn::fusion_binary_attr_map) {
+    std::string op = it.first;
+    at::jit::TemplateEnv env;
+    env.s("op", op);
+
+    at::jit::TemplateEnv env_fused;
+    env_fused.s("op_attr", op);
+
+    SubgraphRewriter rewriter;
+    rewriter.RegisterRewritePattern(
+        conv_op_rstring.format(env), conv_op_fused_rstring.format(env_fused));
+
+    auto filter = [](const Match& match,
+                     const std::unordered_map<std::string, Value*>& vmap) {
+      auto conv_res = toIValue(match.values_map.at(vmap.at("conv2d_res")));
+      auto other = toIValue(match.values_map.at(vmap.at("other")));
+      if (!conv_res.has_value() || !conv_res.value().isTensor()) {
+        return false;
+      }
+      const at::Tensor& conv_res_value = conv_res.value().toTensor();
+      if (other.has_value() && other.value().isTensor()) {
+        const at::Tensor& other_value = other.value().toTensor();
+        // TODO: support broadcast.
+        if (other_value.sizes() != conv_res_value.sizes() ||
+            other_value.dtype() != conv_res_value.dtype() ||
+            !other_value.is_contiguous() ||
+            other_value.suggest_memory_format() !=
+                conv_res_value.suggest_memory_format() ||
+            other_value.device() != conv_res_value.device()) {
+          return false;
+        }
+      } else {
+        return false;
+      }
+      // alpha is optional
+      if (vmap.find("alpha") != vmap.end()) {
+        auto alpha = toIValue(match.values_map.at(vmap.at("alpha")));
+        if (alpha.has_value() && alpha.value().isDouble()) {
+          auto alpha_ = alpha.value().toDouble();
+          if (alpha_ != 1.0) {
+            return false;
+          }
+        } else {
+          return false;
+        }
+      }
+      return true;
+    };
+    rewriter.runOnGraph(graph, filter);
+  }
+}
+
 void PrePackingOpsFolder(Block* b) {
   auto is_foldable_op = [](const Node* n) -> bool {
     return (
@@ -208,23 +281,26 @@ void FoldPrePackingOps(std::shared_ptr<Graph>& graph) {
   PrePackingOpsFolder(graph->block());
 }
 
-void FuseConvWithEltwise(std::shared_ptr<Graph>& graph) {
+void FuseConvWithBinaryOrEltwise(std::shared_ptr<Graph>& graph) {
   GRAPH_DEBUG(
-      "Before insertMkldnnPrePackedOps. Beginning of FuseConvWithEltwise\n",
+      "Before insertMkldnnPrePackedOps. Beginning of FuseConvWithBinaryOrEltwise\n",
       *graph);
   insertMkldnnPrePackedOps(graph);
   GRAPH_DEBUG(
       "After insertMkldnnPrePackedOps, before FuseReluWithPackedOps\n", *graph);
   FuseReluWithPackedOps(graph);
   GRAPH_DEBUG(
-      "After FuseReluWithPackedOps, before FoldPrePackingOps\n", *graph);
+      "After FuseReluWithPackedOps, before FuseBinaryWithPackedOps\n", *graph);
+  FuseBinaryWithPackedOps(graph);
+  GRAPH_DEBUG(
+      "After FuseBinaryWithPackedOps, before FoldPrePackingOps\n", *graph);
   FoldPrePackingOps(graph);
   GRAPH_DEBUG("After FoldPrePackingOps. End of FuseConvWithEltwise\n", *graph);
 }
 
 #else
 
-void FuseConvWithEltwise(std::shared_ptr<Graph>& graph) {
+void FuseConvWithBinaryOrEltwise(std::shared_ptr<Graph>& graph) {
   GRAPH_DEBUG("MKLDNN Not enabled");
 }
 

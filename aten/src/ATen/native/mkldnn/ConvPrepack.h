@@ -26,6 +26,11 @@ Tensor conv_run(
     const Tensor& input,
     const c10::intrusive_ptr<mkldnn::ConvOpContext>& op_context);
 
+Tensor conv_binary_run(
+    const Tensor& input,
+    const Tensor& other,
+    const c10::intrusive_ptr<mkldnn::ConvOpContext>& op_context);
+
 ContextConv create(
     const Tensor& weight,
     const c10::optional<Tensor>& bias,
@@ -37,8 +42,13 @@ ContextConv create(
     const ideep::attr_t& attr);
 
 Tensor run(ContextConv& context, const Tensor& input);
-
+Tensor run(ContextConv& context, const Tensor& input, const Tensor& other);
 void run(ContextConv& context, const Tensor& input, void* output);
+void run(
+    ContextConv& context,
+    const Tensor& input,
+    const Tensor& other,
+    void* output);
 
 } // namespace convolution
 } // namespace internal
