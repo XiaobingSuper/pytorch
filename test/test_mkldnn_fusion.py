@@ -113,6 +113,36 @@ class TestMkldnnFusion(JitTestCase):
                         else:
                             self.assertGraphContains(graph, kind='aten::conv2d')
 
+    def test_conv_binary(self):
+        class M(nn.Module):
+            def __init__(self, binary_fn, in_channels, out_channels, bias, **kwargs):
+                super(M, self).__init__()
+                self.conv1 = torch.nn.Conv2d(in_channels, out_channels, bias=bias, **kwargs)
+                self.conv2 = torch.nn.Conv2d(in_channels, out_channels, bias=bias, **kwargs)
+                self.binary = binary_fn
+
+            def forward(self, x):
+                out1 = self.conv1(x)
+                out2 = self.conv2(x)
+                y = self.binary(out1, out2)
+                return y
+
+        for memory_format, enabled in [
+            [torch.contiguous_format, False],
+            [torch.channels_last, True],
+        ]:
+            for binary_fn in [torch.add]:
+                for bias in [True, False]:
+                    for oC in [1, 10]:
+                        m = M(binary_fn, 3, oC, bias, kernel_size=(3, 3)).to(memory_format=memory_format)
+                        x = torch.randn(1, 3, 224, 224).to(memory_format=memory_format)
+
+                        graph = self._check_model(m, x)
+                        if enabled:
+                            self.assertFused(graph, ['aten::conv2d', 'aten::' + binary_fn.__name__])
+                            self.assertGraphContainsExactly(graph, FUSION_GROUP, 1)
+                        else:
+                            self.assertGraphContains(graph, kind='aten::conv2d')
 
 if __name__ == "__main__":
     run_tests()

@@ -49,6 +49,9 @@ int nnc_lowerings_lazy_registration() {
   RegisterNNCLoweringsFunction mkldnn_prepacked_conv2d_run(
       {"mkldnn_prepacked::conv2d_run(Tensor X, __torch__.torch.classes.mkldnn.ConvOpContext W_prepack) -> (Tensor Y)"},
       computeMkldnnPrepackedConvRun);
+  RegisterNNCLoweringsFunction mkldnn_prepacked_conv2d_binary_run(
+      {"mkldnn_prepacked::conv2d_binary_run(Tensor X, Tensor other, __torch__.torch.classes.mkldnn.ConvOpContext W_prepack) -> (Tensor Y)"},
+      computeMkldnnPrepackedConvBinaryRun);
 #endif // AT_MKLDNN_ENABLED()
 
   RegisterNNCLoweringsFunction aten_sub(

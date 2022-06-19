@@ -28,11 +28,15 @@ const static std::map<std::string, PostOp> fusion_attr_map = {
     {"relu", {ideep::attr_t::fuse_relu()}},
 };
 
+const static std::map<std::string, ideep::algorithm> fusion_binary_attr_map = {
+    {"add", {ideep::algorithm::binary_add}},
+};
+
 } // namespace mkldnn
 
 #endif // AT_MKLDNN_ENABLED()
 
-void FuseConvWithEltwise(std::shared_ptr<Graph>& graph);
+void FuseConvWithBinaryOrEltwise(std::shared_ptr<Graph>& graph);
 
 } // namespace jit
 } // namespace torch

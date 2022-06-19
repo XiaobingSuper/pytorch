@@ -1605,8 +1605,8 @@ void TensorExprKernel::optimizeOwningGraph() {
   // Determine the propagated memory layout
   deduceMemoryLayoutPolicy();
 
-  // Fuse Conv with Eltwise Op
-  FuseConvWithEltwise(graph_);
+  // Fuse Conv with Binary or Eltwise Op
+  FuseConvWithBinaryOrEltwise(graph_);
 
   // Optimize the concatenation
   OptimizeCat(graph_);
