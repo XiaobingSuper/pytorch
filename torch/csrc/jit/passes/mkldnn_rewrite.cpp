@@ -18,7 +18,7 @@ c10::VaryingShape<int64_t> getSizesOf(Node* n, size_t idx) {
   return tt->sizes();
 }
 
-void insertPrePackedConvOpForNode(Node* n) {
+void insertPrePackedConvOpForNode(Node* n, bool use_channels_last) {
   constexpr int POS_INPUT = 0;
   constexpr int POS_WEIGHT = 1;
   if (!tensorexpr::isContiguous(
@@ -57,6 +57,8 @@ void insertPrePackedConvOpForNode(Node* n) {
     prepack_node->addInput(v);
   }
   prepack_node->addInput(input_size);
+  auto use_channels_last_ivalue = graph->insertConstant(IValue(use_channels_last));
+  prepack_node->addInput(use_channels_last_ivalue);
   auto attr = graph->insertConstant(IValue("none"));
   prepack_node->addInput(attr);
   prepack_node->output()->setType(
@@ -89,60 +91,60 @@ bool isTensorTypeCPU(Node* node) {
   return true;
 }
 
-void insertPrePackedConvOp(Block* b) {
+void insertPrePackedConvOp(Block* b, bool use_channels_last) {
   for (Node* n : b->nodes()) {
     for (Block* b : n->blocks()) {
-      insertPrePackedConvOp(b);
+      insertPrePackedConvOp(b, use_channels_last);
     }
 
     if (n->kind() == aten::conv2d) {
       if (isTensorTypeCPU(n)) {
-        insertPrePackedConvOpForNode(n);
+        insertPrePackedConvOpForNode(n, use_channels_last);
       }
     }
   }
   EliminateDeadCode(b);
 }
 
-void insertMkldnnPrePackedConv2dOp(std::shared_ptr<Graph>& graph) {
+void insertMkldnnPrePackedConv2dOp(std::shared_ptr<Graph>& graph, bool use_channels_last) {
   // Replace _convolution with conv2d
   graph_rewrite_helper::replaceConvolutionWithAtenConv(graph);
 
-  insertPrePackedConvOp(graph->block());
+  insertPrePackedConvOp(graph->block(), use_channels_last);
 }
 
-void insertMkldnnPrePackedOps(std::shared_ptr<Graph>& graph) {
-  insertMkldnnPrePackedConv2dOp(graph);
+void insertMkldnnPrePackedOps(std::shared_ptr<Graph>& graph, bool use_channels_last) {
+  insertMkldnnPrePackedConv2dOp(graph, use_channels_last);
 }
 
-void insertMkldnnPrePackedOps(script::Module& module) {
+void insertMkldnnPrePackedOps(script::Module& module, bool use_channels_last) {
   for (auto& method : module.get_methods()) {
     auto graph = method.graph();
-    insertMkldnnPrePackedOps(graph);
+    insertMkldnnPrePackedOps(graph, use_channels_last);
   }
   for (script::Module m : module.children()) {
-    insertMkldnnPrePackedOps(m);
+    insertMkldnnPrePackedOps(m, use_channels_last);
   }
 }
 
 void FuseReluWithPackedOps(std::shared_ptr<Graph>& graph) {
   auto conv_op_rstring = at::jit::CodeTemplate(R"(
     graph(%input, %weight, %bias, %stride:int[], %padding:int[],
-          %dilation:int[], %groups:int, %input_size:int[], %dummy_attr:str):
+          %dilation:int[], %groups:int, %input_size:int[], %use_channels_last:bool, %dummy_attr:str):
         %packed_weight_bias = mkldnn_prepacked::conv2d_prepack(
             %weight, %bias, %stride, %padding, %dilation, %groups,
-            %input_size, %dummy_attr)
+            %input_size, %use_channels_last, %dummy_attr)
         %conv2d_res = mkldnn_prepacked::conv2d_run(%input, %packed_weight_bias)
         %res = aten::${op}(%conv2d_res)
         return (%res))");
 
   auto conv_op_fused_rstring = at::jit::CodeTemplate(R"(
     graph(%input, %weight, %bias, %stride:int[], %padding:int[],
-          %dilation:int[], %groups:int, %input_size:int[], %dummy_attr:str):
+          %dilation:int[], %groups:int, %input_size:int[], %use_channels_last:bool, %dummy_attr:str):
         %attr: str = prim::Constant[value="${op_attr}"]()
         %packed_weight_bias : __torch__.torch.classes.mkldnn.ConvOpContext = mkldnn_prepacked::conv2d_prepack(
             %weight, %bias, %stride, %padding, %dilation, %groups,
-            %input_size, %attr)
+            %input_size, %use_channels_last, %attr)
         %res = mkldnn_prepacked::conv2d_run(%input, %packed_weight_bias)
         return (%res))");
 
@@ -170,21 +172,21 @@ void FuseReluWithPackedOps(std::shared_ptr<Graph>& graph) {
 void FuseBinaryWithPackedOps(std::shared_ptr<Graph>& graph) {
   auto conv_op_rstring = at::jit::CodeTemplate(R"(
     graph(%input, %weight, %bias, %other, %alpha, %stride:int[], %padding:int[],
-          %dilation:int[], %groups:int, %input_size:int[], %dummy_attr:str):
+          %dilation:int[], %groups:int, %input_size:int[], %use_channels_last:bool, %dummy_attr:str):
         %packed_weight_bias = mkldnn_prepacked::conv2d_prepack(
             %weight, %bias, %stride, %padding, %dilation, %groups,
-            %input_size, %dummy_attr)
+            %input_size, %use_channels_last, %dummy_attr)
         %conv2d_res = mkldnn_prepacked::conv2d_run(%input, %packed_weight_bias)
         %res = aten::${op}(%conv2d_res, %other, %alpha)
         return (%res))");
 
   auto conv_op_fused_rstring = at::jit::CodeTemplate(R"(
     graph(%input, %weight, %bias, %other, %alpha, %stride:int[], %padding:int[],
-          %dilation:int[], %groups:int, %input_size:int[], %dummy_attr:str):
+          %dilation:int[], %groups:int, %input_size:int[], %use_channels_last:bool, %dummy_attr:str):
         %attr: str = prim::Constant[value="${op_attr}"]()
         %packed_weight_bias : __torch__.torch.classes.mkldnn.ConvOpContext = mkldnn_prepacked::conv2d_prepack(
             %weight, %bias, %stride, %padding, %dilation, %groups,
-            %input_size, %attr)
+            %input_size, %use_channels_last, %attr)
         %res = mkldnn_prepacked::conv2d_binary_run(%input, %other, %packed_weight_bias)
         return (%res))");
 
@@ -204,6 +206,7 @@ void FuseBinaryWithPackedOps(std::shared_ptr<Graph>& graph) {
                      const std::unordered_map<std::string, Value*>& vmap) {
       auto conv_res = toIValue(match.values_map.at(vmap.at("conv2d_res")));
       auto other = toIValue(match.values_map.at(vmap.at("other")));
+      return true;
       if (!conv_res.has_value() || !conv_res.value().isTensor()) {
         return false;
       }
@@ -281,11 +284,11 @@ void FoldPrePackingOps(std::shared_ptr<Graph>& graph) {
   PrePackingOpsFolder(graph->block());
 }
 
-void FuseConvWithBinaryOrEltwise(std::shared_ptr<Graph>& graph) {
+void FuseConvWithBinaryOrEltwise(std::shared_ptr<Graph>& graph, bool use_channels_last) {
   GRAPH_DEBUG(
       "Before insertMkldnnPrePackedOps. Beginning of FuseConvWithBinaryOrEltwise\n",
       *graph);
-  insertMkldnnPrePackedOps(graph);
+  insertMkldnnPrePackedOps(graph, use_channels_last);
   GRAPH_DEBUG(
       "After insertMkldnnPrePackedOps, before FuseReluWithPackedOps\n", *graph);
   FuseReluWithPackedOps(graph);
