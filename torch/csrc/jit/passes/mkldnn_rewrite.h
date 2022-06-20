@@ -36,7 +36,7 @@ const static std::map<std::string, ideep::algorithm> fusion_binary_attr_map = {
 
 #endif // AT_MKLDNN_ENABLED()
 
-void FuseConvWithBinaryOrEltwise(std::shared_ptr<Graph>& graph);
+void FuseConvWithBinaryOrEltwise(std::shared_ptr<Graph>& graph, bool use_channels_last);
 
 } // namespace jit
 } // namespace torch

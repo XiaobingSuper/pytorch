@@ -28,6 +28,7 @@ c10::intrusive_ptr<mkldnn::ConvOpContext> createConvPrePackOpContext(
     std::vector<int64_t> dilation,
     int64_t groups,
     std::vector<int64_t> input_size,
+    bool use_channels_last,
     std::string attr) {
   auto it_elt = fusion_attr_map.find(attr);
   auto it_binary = fusion_binary_attr_map.find(attr);
@@ -39,10 +40,8 @@ c10::intrusive_ptr<mkldnn::ConvOpContext> createConvPrePackOpContext(
   if (it_elt != fusion_attr_map.end()) {
     op_attr = it_elt->second.op_attr;
   } else {
-    bool is_channels_last =
-        weight.suggest_memory_format() == at::MemoryFormat::ChannelsLast;
     ideep::tag other_tag =
-        is_channels_last ? ideep::tag::nhwc : ideep::tag::any;
+        use_channels_last ? ideep::tag::nhwc : ideep::tag::any;
     auto k = weight.ndimension();
     int64_t dim = k - 2;
     const auto padding_expanded =
@@ -59,7 +58,7 @@ c10::intrusive_ptr<mkldnn::ConvOpContext> createConvPrePackOpContext(
         stride_expanded,
         dilation_expanded);
     auto other_desc = ideep::tensor::desc(
-        output_size, get_mkldnn_dtype(weight.scalar_type()), ideep::tag::nhwc);
+        output_size, get_mkldnn_dtype(weight.scalar_type()), other_tag);
     op_attr = ideep::attr_t::fuse_binary(it_binary->second, other_desc);
   }
   return mkldnn::MkldnnConvOpContext::create_context(
@@ -70,6 +69,7 @@ c10::intrusive_ptr<mkldnn::ConvOpContext> createConvPrePackOpContext(
       std::move(dilation),
       groups,
       std::move(input_size),
+      use_channels_last,
       op_attr);
 }
 
@@ -81,6 +81,7 @@ ContextConv create(
     const IntArrayRef dilation,
     const int64_t groups,
     const IntArrayRef input_size,
+    bool use_channels_last,
     const ideep::attr_t& attr) {
   auto k = weight.ndimension();
   int64_t dim = k - 2;
@@ -93,9 +94,6 @@ ContextConv create(
 
   c10::impl::ExcludeDispatchKeyGuard edkg(c10::autograd_dispatch_keyset);
   auto w = itensor_view_from_dense(weight);
-  // TODO: what if input is nhwc but w is nchw
-  bool is_channels_last =
-      weight.suggest_memory_format() == at::MemoryFormat::ChannelsLast;
   ideep::tensor::desc expected_weight_desc =
       ideep::convolution_forward::expected_weights_desc(
           w.get_dims(),
@@ -110,7 +108,7 @@ ContextConv create(
           /*x_dtype*/ w.get_data_type(),
           {input_size_expanded.begin(), input_size_expanded.end()},
           attr,
-          is_channels_last);
+          use_channels_last);
 
   ideep::tensor packed_weight;
   packed_weight.init(expected_weight_desc);
@@ -267,7 +265,8 @@ void mkldnn_convolution_binary_out(
   c10::MaybeOwned<Tensor> bias_maybe_owned =
       at::borrow_from_optional_tensor(bias_opt);
   const Tensor& bias = *bias_maybe_owned;
-
+  bool flag = input.suggest_memory_format() == at::MemoryFormat::ChannelsLast;
+  std::cout<<"mkldnn_convolution_binary_out src: "<< flag<<std::endl;
   c10::impl::ExcludeDispatchKeyGuard edkg(c10::autograd_dispatch_keyset);
   const ideep::tensor mkldnn_input = itensor_from_tensor(input);
   const ideep::tensor mkldnn_other = itensor_from_tensor(other);

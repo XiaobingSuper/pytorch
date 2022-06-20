@@ -18,6 +18,7 @@ using SerializationTypeConvPrePack = std::tuple<
     std::vector<int64_t>,
     int64_t,
     std::vector<int64_t>,
+    bool,
     std::string>;
 
 class ConvOpContext : public torch::jit::CustomClassHolder {
@@ -29,6 +30,7 @@ class ConvOpContext : public torch::jit::CustomClassHolder {
   std::vector<int64_t> dilation_;
   int64_t groups_;
   std::vector<int64_t> input_size_;
+  bool use_channels_last_;
   std::string attr_;
 
  public:
@@ -41,6 +43,7 @@ class ConvOpContext : public torch::jit::CustomClassHolder {
         dilation_,
         groups_,
         input_size_,
+        use_channels_last_,
         attr_);
   }
 
@@ -90,6 +93,7 @@ class MkldnnConvOpContext final : public ConvOpContext {
       std::vector<int64_t>&& dilation,
       int64_t groups,
       std::vector<int64_t>&& input_size,
+      bool use_channels_last,
       const ideep::attr_t& attr);
 };
 
