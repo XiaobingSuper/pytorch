@@ -1388,6 +1388,7 @@ void nnc_aten_addmm(
   }
 }
 
+
 // Only provides first output, the second output is just a copy of one of the
 // inputs
 void nnc_aten_triangular_solve(
@@ -1410,6 +1411,27 @@ void nnc_aten_triangular_solve(
         r, r2, input, A, extra_args[0], extra_args[2], extra_args[3]);
   } catch (...) {
   }
+}
+
+void nnc_aten_autocast_to_reduced_precision(
+    int64_t bufs_num,
+    void** buf_data,
+    int64_t* buf_ranks,
+    int64_t* buf_dims,
+    int64_t* buf_strides,
+    int8_t* buf_dtypes,
+    int64_t args_num,
+    int64_t* extra_args) {
+  auto tensors = constructTensors(
+      bufs_num, buf_data, buf_ranks, buf_dims, buf_strides, buf_dtypes);
+  const at::Tensor& x = tensors[1];
+  bool cuda_enabled = (bool)extra_args[0];
+  bool cpu_enabled = (bool)extra_args[1];
+  c10::ScalarType cuda_dtype = static_cast<c10::ScalarType>(extra_args[2]);
+  c10::ScalarType cpu_dtype = static_cast<c10::ScalarType>(extra_args[3]);
+  auto r = x._autocast_to_reduced_precision(cuda_enabled, cpu_enabled, cuda_dtype, cpu_dtype);
+  memcpy(buf_data[0], r.data_ptr(), r.element_size() * r.numel());
+  std::cout<<"nnc_aten_autocast_to_reduced_precision"<<std::endl;
 }
 
 #if AT_MKLDNN_ENABLED()
@@ -1634,6 +1656,10 @@ const static RegisterNNCExternalFunction nnc_triangular_solve(
 const static RegisterNNCExternalFunction nnc_embedding(
     "nnc_aten_embedding",
     nnc_aten_embedding);
+
+const static RegisterNNCExternalFunction nnc_autocast_to_reduced_precision(
+    "nnc_aten_autocast_to_reduced_precision",
+     nnc_aten_autocast_to_reduced_precision);
 
 #if AT_MKLDNN_ENABLED()
 const static RegisterNNCExternalFunction reg_nnc_mkldnn_prepacked_conv_run(

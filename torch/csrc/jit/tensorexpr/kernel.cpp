@@ -248,6 +248,15 @@ bool conv2dIsSupportedJit(const torch::jit::Node* node) {
   auto const& dilation = toIValue(node->input(5));
   auto const& groups = toIValue(node->input(6));
 
+  if (!input) {
+    GRAPH_DEBUG("input aren't static");
+  }
+  if (!weight) {
+    GRAPH_DEBUG("input aren't static");
+  }
+  if (!bias) {
+    GRAPH_DEBUG("input aren't static");
+  }
   // Everything should be statically known.
   if (!input || !weight || !bias || !stride || !pad || !dilation || !groups) {
     GRAPH_DEBUG("some params aren't static");

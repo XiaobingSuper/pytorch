@@ -40,7 +40,8 @@
   _(nnc_aten_dequantize)                \
   _(nnc_aten_dequantize_out)            \
   _(nnc_aten_upsample_nearest2d)        \
-  _(nnc_aten_upsample_nearest2d_out)
+  _(nnc_aten_upsample_nearest2d_out)    \
+  _(nnc_aten_autocast_to_reduced_precision)
 
 #define DECLARE_EXTERNAL_FUNCTION(NAME) \
   TORCH_API void NAME(                  \

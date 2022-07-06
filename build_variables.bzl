@@ -357,6 +357,7 @@ core_sources_full_mobile_no_backend_interface = [
     "torch/csrc/jit/tensorexpr/operators/pointwise.cpp",
     "torch/csrc/jit/tensorexpr/operators/quantization.cpp",
     "torch/csrc/jit/tensorexpr/operators/reduction.cpp",
+    "torch/csrc/jit/tensorexpr/operators/convertdtype.cpp",
     "torch/csrc/jit/tensorexpr/operators/softmax.cpp",
     "torch/csrc/jit/tensorexpr/reduction.cpp",
     "torch/csrc/jit/tensorexpr/registerizer.cpp",

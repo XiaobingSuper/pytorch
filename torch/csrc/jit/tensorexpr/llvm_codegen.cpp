@@ -205,7 +205,7 @@ class LLVMCodeGenImpl : public IRVisitor {
   std::string kernel_func_name_;
 
 #define LLVM_TYPE_DECLARE(_1, Name) llvm::Type* Name##Ty_;
-  AT_FORALL_SCALAR_TYPES_AND2(Bool, Half, LLVM_TYPE_DECLARE);
+  AT_FORALL_SCALAR_TYPES_AND3(Bool, Half, BFloat16, LLVM_TYPE_DECLARE);
 #undef LLVM_TYPE_DECLARE
   llvm::Type* Int8PtrTy_;
   llvm::Type* VoidTy_;
@@ -456,6 +456,7 @@ LLVMCodeGenImpl::LLVMCodeGenImpl(
   IntTy_ = llvm::Type::getInt32Ty(getContext());
   LongTy_ = llvm::Type::getInt64Ty(getContext());
   HalfTy_ = llvm::Type::getHalfTy(getContext());
+  BFloat16Ty_ = llvm::Type::getBFloatTy(getContext());
   FloatTy_ = llvm::Type::getFloatTy(getContext());
   DoubleTy_ = llvm::Type::getDoubleTy(getContext());
   Int8PtrTy_ = llvm::Type::getInt8PtrTy(getContext());
@@ -521,15 +522,17 @@ llvm::Type* LLVMCodeGenImpl::dtypeToLLVM(Dtype dtype) {
   case ScalarType::n:    \
     return n##Ty_;       \
     break;
-
     AT_FORALL_SCALAR_TYPES_AND2(Bool, Half, TYPE_CASE);
 #undef TYPE_CASE
     case ScalarType::QInt8:
       return CharTy_;
       break;
-
     case ScalarType::QUInt8:
       return ByteTy_;
+      break;
+
+    case ScalarType::BFloat16:
+      return BFloat16Ty_;
       break;
 
     default:
@@ -989,9 +992,12 @@ void LLVMCodeGenImpl::visit(HalfImmPtr v) {
 }
 
 void LLVMCodeGenImpl::visit(BFloat16ImmPtr v) {
+  /*
   TORCH_INTERNAL_ASSERT(
       false,
       buildErrorMessage("Fuser's LLVM codegen does not support bfloat16"));
+  */
+  value_ = llvm::ConstantFP::get(BFloat16Ty_, v->value());
 }
 
 void LLVMCodeGenImpl::visit(BoolImmPtr v) {
@@ -1029,9 +1035,9 @@ void LLVMCodeGenImpl::visit(CastPtr v) {
   // Scalar casts
   if (srcType->isFPOrFPVectorTy()) {
     if (dstType->isFPOrFPVectorTy()) {
-      // as with eager, convert from Double -> Half by Converting to Float then
-      // Half. TODO: __truncdfhf2
-      if (v->dtype().scalar_type() == ScalarType::Half &&
+      // as with eager, convert from Double -> Half/bfloat16 by Converting to Float then
+      // Half/Bfloat16. TODO: __truncdfhf2
+      if ((v->dtype().scalar_type() == ScalarType::Half || v->dtype().scalar_type() == ScalarType::BFloat16) &&
           v->src_value()->dtype().scalar_type() == ScalarType::Double) {
         value_ = irb_.CreateFPCast(
             value_, llvmTypeToVec(FloatTy_, v->dtype().lanes()));
@@ -1162,7 +1168,7 @@ void LLVMCodeGenImpl::visit(RampPtr v) {
   case ScalarType::Name:                                       \
     vecType = llvm::VectorType::get(Name##Ty_, element_count); \
     break;
-    AT_FORALL_SCALAR_TYPES_AND2(Bool, Half, TYPE_CASE);
+    AT_FORALL_SCALAR_TYPES_AND3(Bool, Half, BFloat16, TYPE_CASE);
 #undef TYPE_CASE
     case ScalarType::QInt8:
       vecType = llvm::VectorType::get(CharTy_, element_count);
