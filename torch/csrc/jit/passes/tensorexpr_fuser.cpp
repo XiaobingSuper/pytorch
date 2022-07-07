@@ -934,11 +934,11 @@ class TensorExprFuser {
         // but on top of that Float16 has a few kinks on LLVM.  Thus, on CPU we
         // additionally disable it until we either move to a more stable version
         // or find workarounds.
-        if ((*st == c10::ScalarType::Half ||
-             *st == c10::ScalarType::BFloat16) &&
+        /*
+        if ((*st == c10::ScalarType::Half) &&
             *device == c10::kCPU) {
           return false;
-        }
+        }*/
 
         // These operators only support floats, because integer divisors need to
         // raise ZeroDivisionError.

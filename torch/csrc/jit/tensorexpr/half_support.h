@@ -15,6 +15,7 @@ class HalfChecker : public IRVisitor {
   HalfChecker(const std::vector<CodeGen::BufferArg>& args) {
     for (const auto& BA : args) {
       hasHalf_ |= BA.dtype().scalar_type() == ScalarType::Half;
+      hasHalf_ |= BA.dtype().scalar_type() == ScalarType::BFloat16;
     }
   }
 
