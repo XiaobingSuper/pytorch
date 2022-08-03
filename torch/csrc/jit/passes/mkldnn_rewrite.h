@@ -26,6 +26,7 @@ const static std::map<std::string, std::vector<torch::jit::MatchFilter>>
 
 const static std::map<std::string, ideep::algorithm> fusion_binary_attr_map = {
     {"add", {ideep::algorithm::binary_add}},
+    {"sub", {ideep::algorithm::binary_sub}},
 };
 
 } // namespace mkldnn

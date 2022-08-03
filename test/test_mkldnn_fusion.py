@@ -131,7 +131,7 @@ class TestMkldnnFusion(JitTestCase):
             [torch.contiguous_format, False],
             [torch.channels_last, True],
         ]:
-            for binary_fn in [torch.add]:
+            for binary_fn in [torch.sub, torch.add]:
                 for bias in [True, False]:
                     for oC in [1, 10]:
                         m = M(binary_fn, 3, oC, bias, kernel_size=(3, 3)).to(memory_format=memory_format)
