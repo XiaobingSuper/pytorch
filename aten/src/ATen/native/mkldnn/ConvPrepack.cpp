@@ -266,7 +266,6 @@ void mkldnn_convolution_binary_out(
       at::borrow_from_optional_tensor(bias_opt);
   const Tensor& bias = *bias_maybe_owned;
   bool flag = input.suggest_memory_format() == at::MemoryFormat::ChannelsLast;
-  std::cout<<"mkldnn_convolution_binary_out src: "<< flag<<std::endl;
   c10::impl::ExcludeDispatchKeyGuard edkg(c10::autograd_dispatch_keyset);
   const ideep::tensor mkldnn_input = itensor_from_tensor(input);
   const ideep::tensor mkldnn_other = itensor_from_tensor(other);

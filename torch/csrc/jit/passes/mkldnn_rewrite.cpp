@@ -204,33 +204,75 @@ void FuseBinaryWithPackedOps(std::shared_ptr<Graph>& graph) {
 
     auto filter = [](const Match& match,
                      const std::unordered_map<std::string, Value*>& vmap) {
-      auto conv_res = toIValue(match.values_map.at(vmap.at("conv2d_res")));
-      auto other = toIValue(match.values_map.at(vmap.at("other")));
-      return true;
-      if (!conv_res.has_value() || !conv_res.value().isTensor()) {
+      
+      auto binary_node = match.values_map.at(vmap.at("res"))->node();
+      auto conv_res = binary_node->inputs().at(0);
+      auto other = binary_node->inputs().at(1);
+      if (!conv_res->type()->cast<TensorType>()) {
         return false;
       }
-      const at::Tensor& conv_res_value = conv_res.value().toTensor();
-      if (other.has_value() && other.value().isTensor()) {
-        const at::Tensor& other_value = other.value().toTensor();
+      if (other->type()->cast<TensorType>()) {
+        auto conv_res_size_option = conv_res->type()
+                                            ->cast<TensorType>()
+                                            ->sizes()
+                                            .concrete_sizes();
+        
+        auto other_size_option = other->type()
+                                        ->cast<TensorType>()
+                                        ->sizes()
+                                        .concrete_sizes();
         // TODO: support broadcast.
-        if (other_value.sizes() != conv_res_value.sizes() ||
-            other_value.dtype() != conv_res_value.dtype() ||
-            !other_value.is_contiguous() ||
-            other_value.suggest_memory_format() !=
-                conv_res_value.suggest_memory_format() ||
-            other_value.device() != conv_res_value.device()) {
+        if (!conv_res_size_option.has_value() || !other_size_option.has_value()) {
+          return false;
+        }
+
+        auto conv_res_size_value = conv_res_size_option.value();
+        auto other_size_value = other_size_option.value();
+	
+        auto conv_res_stride_option = conv_res->type()
+                                              ->cast<TensorType>()
+                                              ->strides()
+                                               .concrete_sizes();
+        
+        auto other_stride_option = other->type()
+                                        ->cast<TensorType>()
+                                        ->strides()
+                                        .concrete_sizes();
+        if (!conv_res_stride_option.has_value() || !other_stride_option.has_value()) {
+          return false;
+        }
+
+       	auto conv_res_stride_value = conv_res_stride_option.value();
+        auto other_stride_value = other_stride_option.value();
+	
+	auto conv_res_dtype_option = conv_res->type()->cast<TensorType>()->scalarType();
+        auto other_dtype_option = other->type()->cast<TensorType>()->scalarType();
+        if (!conv_res_dtype_option || !other_dtype_option) {
+          return false;
+        }
+        auto conv_res_device_option = conv_res->type()->cast<TensorType>()->device();
+        auto other_device_option = other->type()->cast<TensorType>()->device();
+        if (!conv_res_device_option || !other_device_option) {
+          return false;
+        }
+        if (conv_res_size_value.empty() || other_size_value.empty() ||
+           conv_res_size_value != other_size_value ||
+	   conv_res_stride_value.empty() || other_stride_value.empty() ||
+	   conv_res_stride_value != other_stride_value ||
+           conv_res_dtype_option.value() != other_dtype_option.value() ||
+           conv_res_device_option.value() != other_device_option.value())  {
           return false;
         }
       } else {
         return false;
       }
+
       // alpha is optional
       if (vmap.find("alpha") != vmap.end()) {
         auto alpha = toIValue(match.values_map.at(vmap.at("alpha")));
-        if (alpha.has_value() && alpha.value().isDouble()) {
-          auto alpha_ = alpha.value().toDouble();
-          if (alpha_ != 1.0) {
+        if (alpha.has_value() && (alpha.value().isDouble() || alpha.value().isInt())) {
+          if (!(alpha.value().isDouble() && alpha.value().toDouble() == 1.0) &&
+              !(alpha.value().isInt() && static_cast<int>(alpha.value().toInt()) == 1)) {
             return false;
           }
         } else {
