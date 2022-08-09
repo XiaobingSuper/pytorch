@@ -198,6 +198,7 @@ void _mkldnn_convolution_binary_out(
         {padding.begin(), padding.end()},
         {padding.begin(), padding.end()},
         groups,
+	true,
         attr);
   } else {
     ideep::convolution_forward::compute_binary(
@@ -211,6 +212,7 @@ void _mkldnn_convolution_binary_out(
         {padding.begin(), padding.end()},
         {padding.begin(), padding.end()},
         groups,
+	true,
         attr);
   }
 }
