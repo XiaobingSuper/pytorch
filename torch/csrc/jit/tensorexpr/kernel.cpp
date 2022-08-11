@@ -1606,8 +1606,7 @@ void TensorExprKernel::optimizeOwningGraph() {
   deduceMemoryLayoutPolicy();
 
   // Fuse Conv with Binary or Eltwise Op
-  auto use_channels_last = memory_layout_policy_ == MemoryLayoutPolicy::kChannelsLastNdContiguous;
-  FuseConvWithBinaryOrEltwise(graph_, use_channels_last);
+  FuseConvWithBinaryOrEltwise(graph_);
 
   // Optimize the concatenation
   OptimizeCat(graph_);

@@ -20,7 +20,6 @@ c10::intrusive_ptr<mkldnn::ConvOpContext> createConvPrePackOpContext(
     std::vector<int64_t> dilation,
     int64_t groups,
     std::vector<int64_t> input_size,
-    bool use_channels_last,
     std::string attr);
 
 Tensor conv_run(
@@ -40,17 +39,12 @@ ContextConv create(
     const IntArrayRef dilation,
     const int64_t groups,
     const IntArrayRef input_size,
-    bool use_channels_last,
     const ideep::attr_t& attr);
 
 Tensor run(ContextConv& context, const Tensor& input);
 Tensor run(ContextConv& context, const Tensor& input, const Tensor& other);
 void run(ContextConv& context, const Tensor& input, void* output);
-void run(
-    ContextConv& context,
-    const Tensor& input,
-    const Tensor& other,
-    void* output);
+void run(ContextConv& context, const Tensor& input, const Tensor& other, void* output);
 
 } // namespace convolution
 } // namespace internal

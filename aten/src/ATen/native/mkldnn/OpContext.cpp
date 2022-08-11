@@ -15,10 +15,9 @@ c10::intrusive_ptr<ConvOpContext> MkldnnConvOpContext::create_context(
     std::vector<int64_t>&& dilation,
     int64_t groups,
     std::vector<int64_t>&& input_size,
-    bool use_channels_last,
     const ideep::attr_t& attr) {
   auto op_context = mkldnn::internal::convolution::create(
-      weight, bias, padding, stride, dilation, groups, input_size, use_channels_last, attr);
+      weight, bias, padding, stride, dilation, groups, input_size, attr);
 
   auto conv_op_context = c10::make_intrusive<MkldnnConvOpContext>(
       std::move(weight),
