@@ -1,10 +1,15 @@
 #pragma once
 
+#include <ATen/Config.h>
 #include <ATen/core/Tensor.h>
 #include <c10/util/ArrayRef.h>
 #include <vector>
 #include <cpuinfo.h>
+#include <vector>
 
+#if AT_MKLDNN_ENABLED()
+#include <ideep/tensor.hpp>
+#endif // AT_MKLDNN_ENABLED()
 
 namespace at { namespace native {
 
@@ -21,6 +26,21 @@ std::vector<int64_t> pool_output_sizes(
     IntArrayRef padding_r,
     IntArrayRef dilation,
     bool ceil_mode);
+
+#if AT_MKLDNN_ENABLED()
+
+#include <ATen/native/mkldnn/Common.h>
+
+using AttrFunction = std::function<ideep::attr_t(
+    std::vector<c10::optional<at::Scalar>>,
+    c10::optional<std::string>)>;
+
+const std::map<std::string, AttrFunction>& fusion_attr_map();
+
+const std::map<std::string, ideep::algorithm>& fusion_binary_alg_map();
+
+#endif // AT_MKLDNN_ENABLED()
+
 };
 
 inline bool mkldnn_bf16_device_check() {

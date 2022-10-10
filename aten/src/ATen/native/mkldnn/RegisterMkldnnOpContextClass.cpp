@@ -34,6 +34,13 @@ TORCH_LIBRARY(mkldnn, m) {
                 // NOLINTNEXTLINE(performance-move-const-arg,cppcoreguidelines-avoid-magic-numbers)
                 std::move(std::get<7>(state)));
           });
+
+
+  m.def(TORCH_SELECTIVE_SCHEMA(
+      "mkldnn::mkldnn_convolution_elementwise(Tensor X, Tensor W, Tensor? B, int[2] padding, int[2] stride, int[2] dilation, int groups, str attr, Scalar?[] scalars, str? algorithm) -> Tensor Y"));
+  m.def(TORCH_SELECTIVE_SCHEMA(
+      "mkldnn::mkldnn_convolution_binary(Tensor X, Tensor other, Tensor W, Tensor? B, int[2] padding, int[2] stride, int[2] dilation, int groups, str attr) -> Tensor Y"));
+
 }
 
 TORCH_LIBRARY(mkldnn_prepacked, m) {

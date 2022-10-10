@@ -1,7 +1,10 @@
 #define TORCH_ONLY_METHOD_OPERATORS
-#include <ATen/core/Tensor.h>
+
+#include <ATen/ATen.h>
 #include <ATen/Config.h>
 #include <ATen/native/ConvUtils.h>
+#include <ATen/core/Tensor.h>
+#include <torch/library.h>
 
 #ifndef AT_PER_OPERATOR_HEADERS
 #include <ATen/NativeFunctions.h>
@@ -171,14 +174,21 @@ static inline at::MemoryFormat mkldnn_convolution_memory_format(int64_t dims, bo
    return memory_format;
 }
 
-Tensor mkldnn_convolution(
+Tensor _mkldnn_convolution(
     const Tensor& input_t,
     const Tensor& weight_t,
     const c10::optional<Tensor>& bias_opt,
     IntArrayRef padding,
     IntArrayRef stride,
     IntArrayRef dilation,
-    int64_t groups) {
+    int64_t groups,
+    std::string attr = "none",
+    std::vector<c10::optional<at::Scalar>> scalars = {},
+    c10::optional<std::string> algorithm = c10::nullopt) {
+  auto it = fusion_attr_map().find(attr);
+  TORCH_CHECK(it != fusion_attr_map().end(), "Fusion behavior undefined.");
+  ideep::attr_t op_attr = it->second(scalars, algorithm);
+
   // See [Note: hacky wrapper removal for optional tensor]
   c10::MaybeOwned<Tensor> bias_maybe_owned = at::borrow_from_optional_tensor(bias_opt);
   const Tensor& bias = *bias_maybe_owned;
@@ -219,7 +229,8 @@ Tensor mkldnn_convolution(
         {padding.begin(), padding.end()},
         {padding.begin(), padding.end()},
         groups,
-        is_channels_last);
+        is_channels_last,
+        op_attr);
   } else {
     ideep::convolution_forward::compute_v3(
         x,
@@ -231,7 +242,8 @@ Tensor mkldnn_convolution(
         {padding.begin(), padding.end()},
         {padding.begin(), padding.end()},
         groups,
-        is_channels_last);
+        is_channels_last,
+        op_attr);
   }
 
   if (input.is_mkldnn()) {
@@ -240,6 +252,112 @@ Tensor mkldnn_convolution(
     return mkldnn_to_dense(MKLDNNTensor(y, input.options()));
   } else {
     TORCH_INTERNAL_ASSERT(y.get_desc().is_nhwc());
+    return output;
+  }
+}
+
+Tensor mkldnn_convolution(
+    const Tensor& input_t,
+    const Tensor& weight_t,
+    const c10::optional<Tensor>& bias_opt,
+    IntArrayRef padding,
+    IntArrayRef stride,
+    IntArrayRef dilation,
+    int64_t groups) {
+  return _mkldnn_convolution(input_t, weight_t, bias_opt, padding, stride, dilation, groups);
+}
+
+
+Tensor mkldnn_convolution_elementwise(
+    const Tensor& input_t,
+    const Tensor& weight_t,
+    const c10::optional<Tensor>& bias_opt,
+    IntArrayRef padding,
+    IntArrayRef stride,
+    IntArrayRef dilation,
+    int64_t groups,
+    std::string attr,
+    std::vector<c10::optional<at::Scalar>> scalars,
+    c10::optional<std::string> algorithm) {
+  c10::impl::ExcludeDispatchKeyGuard edkg(c10::autograd_dispatch_keyset);
+  return _mkldnn_convolution(
+      input_t, weight_t, bias_opt, padding, stride, dilation, groups, attr, scalars, algorithm);
+}
+
+Tensor mkldnn_convolution_binary(
+    const Tensor& input_t,
+    const Tensor& other_t,
+    const Tensor& weight_t,
+    const c10::optional<Tensor>& bias_opt,
+    IntArrayRef padding,
+    IntArrayRef stride,
+    IntArrayRef dilation,
+    int64_t groups,
+    std::string attr) {
+  c10::impl::ExcludeDispatchKeyGuard edkg(c10::autograd_dispatch_keyset);
+  bool can_be_fused = input_t.scalar_type() == other_t.scalar_type() && input_t.device() == other_t.device()
+      && input_t.sizes() == other_t.sizes() && mkldnn_conv_use_channels_last(input_t, weight_t) &&
+      (input_t.scalar_type() == ScalarType::BFloat16 && mkldnn_bf16_device_check() || input_t.scalar_type() == ScalarType::Float);
+
+  auto it_binary = fusion_binary_alg_map().find(attr);
+  TORCH_CHECK(it_binary != fusion_binary_alg_map().end(), "Fusion behavior undefined.");
+  if (can_be_fused) {
+    c10::MaybeOwned<Tensor> bias_maybe_owned = at::borrow_from_optional_tensor(bias_opt);
+    const Tensor& bias = *bias_maybe_owned;
+    check_shape_forward(input_t, weight_t, bias, padding, stride, dilation, groups);
+    auto memory_format = mkldnn_convolution_memory_format(input_t.ndimension(), true);
+
+    auto input = input_t.contiguous(memory_format);
+    auto weight = weight_t.contiguous(memory_format);
+    auto other = other_t.contiguous(memory_format);
+    auto output  = at::empty_like(other);
+    const ideep::tensor x = itensor_from_tensor(input);
+    const ideep::tensor w = itensor_from_tensor(weight);
+    const ideep::tensor z = itensor_from_tensor(other);
+    ideep::tensor y = itensor_from_tensor(output);
+    auto output_size = other.sizes().vec();
+    auto other_desc = ideep::tensor::desc(
+        output_size, get_mkldnn_dtype(weight.scalar_type()), ideep::tag::nhwc);
+    auto op_attr = ideep::attr_t::fuse_binary(it_binary->second, other_desc);
+    if (bias.defined()) {
+      const ideep::tensor b = itensor_from_tensor(bias);
+      ideep::convolution_forward::compute_binary(
+        x,
+        z,
+        w,
+        b,
+        output_size,
+        y,
+        {stride.begin(), stride.end()},
+        {dilation.begin(), dilation.end()},
+        {padding.begin(), padding.end()},
+        {padding.begin(), padding.end()},
+        groups,
+        true,
+        op_attr);
+    } else {
+      ideep::convolution_forward::compute_binary(
+          x,
+          z,
+          w,
+          output_size,
+          y,
+          {stride.begin(), stride.end()},
+          {dilation.begin(), dilation.end()},
+          {padding.begin(), padding.end()},
+          {padding.begin(), padding.end()},
+          groups,
+          true,
+          op_attr);
+    }
+    return output;
+  } else{
+    auto output = at::conv2d(input_t, weight_t, bias_opt, stride, padding, dilation, groups);
+    if (attr == "add") {
+      output.add_(other_t);
+    } else {
+      output.sub_(other_t);
+    }
     return output;
   }
 }
@@ -363,6 +481,15 @@ std::tuple<Tensor, Tensor, Tensor> mkldnn_convolution_backward(
 }
 
 REGISTER_ALL_CPU_DISPATCH(mkldnn_convolution_backward_stub, &mkldnn_convolution_backward);
+
+TORCH_LIBRARY_IMPL(mkldnn_fusion, CPU, m) {
+  m.impl(
+      TORCH_SELECTIVE_NAME("mkldnn::mkldnn_convolution_elementwise"),
+      TORCH_FN(mkldnn_convolution_elementwise));
+  m.impl(
+      TORCH_SELECTIVE_NAME("mkldnn::mkldnn_convolution_binary"),
+      TORCH_FN(mkldnn_convolution_binary));
+}
 
 }}  // namespace at::native
 
