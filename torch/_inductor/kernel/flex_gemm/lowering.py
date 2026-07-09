@@ -15,6 +15,7 @@ from torch.utils._ordered_set import OrderedSet
 from ... import ir
 from ...ir import IRNode, TensorBox
 from ...lowering import empty_strided, process_subgraph_nodes, register_lowering
+from ...virtualized import V
 
 
 def flex_gemm_tensor_placeholders(
@@ -131,7 +132,12 @@ def allocate_flex_gemm_aux_outs(
 @register_lowering(flex_gemm_hop, type_promotion_kind=None)
 def flex_gemm_lowering(gemm_op, subgraph, args, gemm_kwargs, kernel_options):
     """Lower FlexGEMM to the regular subgraph path or the QUACK template."""
-    if kernel_options.get("backend", "TRITON") != "QUACK":
+    backend = kernel_options.get("backend", "TRITON")
+    if backend == "FLYDSL":
+        return flydsl_flex_gemm_lowering(
+            gemm_op, subgraph, args, gemm_kwargs, kernel_options
+        )
+    if backend != "QUACK":
         return process_subgraph_nodes(subgraph.graph_module, list(args))
     if gemm_op not in FLEX_GEMM_OP_SPECS:
         raise NotImplementedError(
@@ -276,6 +282,167 @@ def flex_gemm_lowering(gemm_op, subgraph, args, gemm_kwargs, kernel_options):
             raise error
     result, _ = autotune_select_algorithm(
         "flex_gemm_epilogue", choices, input_nodes, layout
+    )
+    if aux_outs:
+        return (result, *aux_outs)
+    return (result,)
+
+
+def _static_int_or_none(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        try:
+            return int(V.graph.sizevars.size_hint(value))
+        except (AttributeError, TypeError, ValueError):
+            return None
+
+
+def _flydsl_epilogue_dtype_name(dtype: torch.dtype) -> str:
+    if dtype is torch.float16:
+        return "f16"
+    if dtype is torch.bfloat16:
+        return "bf16"
+    if dtype is torch.float32:
+        return "f32"
+    if dtype is torch.bool:
+        return "i8"
+    raise NotImplementedError(f"unsupported FlyDSL epilogue arg dtype: {dtype}")
+
+
+def flydsl_flex_gemm_lowering(gemm_op, subgraph, args, gemm_kwargs, kernel_options):
+    """Lower accumulator-only FlexGEMM mm epilogues to FlyDSL hgemm."""
+    from ..mm import flydsl_mm_template
+    from torch._inductor.kernel.flydsl.epilogue import (
+        materialize_flydsl_flex_gemm_epilogue,
+    )
+    from torch._inductor.select_algorithm import autotune_select_algorithm
+    from torch._inductor.template_heuristics.flydsl_gemm import get_hgemm_configs
+
+    if gemm_op is not torch.ops.aten.mm.default:
+        raise NotImplementedError("FlyDSL FlexGEMM currently supports only aten.mm")
+    tuned = kernel_options.get("tuned", False)
+    unsupported_options = OrderedSet(kernel_options) - OrderedSet(["backend", "tuned"])
+    if unsupported_options:
+        raise NotImplementedError(
+            f"unsupported FlyDSL FlexGEMM kernel options: {sorted(unsupported_options)}"
+        )
+    if gemm_kwargs:
+        raise NotImplementedError("FlyDSL FlexGEMM currently does not support gemm_kwargs")
+
+    from torch._inductor.kernel.flex_gemm.epilogue import (
+        gemm_node as flex_gemm_node,
+        output_plan as flex_gemm_output_plan,
+    )
+
+    gemm_fx_node = flex_gemm_node(subgraph.graph_module, gemm_op)
+    placeholders = [
+        node for node in subgraph.graph_module.graph.nodes if node.op == "placeholder"
+    ]
+    placeholder_args = dict(zip(placeholders, args, strict=True))
+    gemm_args: list[TensorBox] = []
+    for arg in gemm_fx_node.args:
+        gemm_arg = placeholder_args[arg] if isinstance(arg, torch.fx.Node) else arg
+        if not isinstance(gemm_arg, TensorBox):
+            raise NotImplementedError("FlyDSL FlexGEMM expects tensor GEMM operands")
+        gemm_args.append(gemm_arg)
+
+    epilogue_arg_placeholders = flex_gemm_epilogue_arg_placeholders(
+        subgraph.graph_module, gemm_fx_node
+    )
+
+    outputs = flex_gemm_output_plan(subgraph.graph_module)
+    output_meta = outputs.output.meta.get("val")
+    if output_meta is None:
+        raise NotImplementedError("FlyDSL FlexGEMM requires output metadata")
+
+    mat1, mat2 = gemm_args
+    output_size = ir.convert_shape_to_inductor(output_meta.shape)
+    layout = ir.FixedLayout(
+        mat1.get_device_or_error(),
+        output_meta.dtype,
+        output_size,
+        ir.convert_shape_to_inductor(output_meta.stride()),
+    )
+    input_nodes = [ir.TemplateBuffer.realize_template_input(arg) for arg in gemm_args]
+    if output_meta.dtype not in (torch.float16, torch.bfloat16):
+        raise NotImplementedError("FlyDSL FlexGEMM supports fp16/bf16 outputs only")
+    aux_metas = validate_flex_gemm_aux_outputs(
+        gemm_op, outputs.aux_outputs, output_size
+    )
+    aux_outs = allocate_flex_gemm_aux_outs(aux_metas, mat1)
+    aux_input_nodes = [
+        ir.TemplateBuffer.realize_template_input(aux_out) for aux_out in aux_outs
+    ]
+
+    epilogue_args: list[TensorBox] = []
+    for arg in epilogue_arg_placeholders:
+        epilogue_arg = placeholder_args[arg]
+        if not isinstance(epilogue_arg, TensorBox):
+            raise NotImplementedError(
+                "FlyDSL FlexGEMM expects tensor epilogue operands"
+            )
+        epilogue_args.append(epilogue_arg)
+    epilogue_input_nodes = [
+        ir.TemplateBuffer.realize_template_input(arg) for arg in epilogue_args
+    ]
+    epilogue_arg_kinds = infer_flex_gemm_epilogue_arg_kinds(
+        gemm_op, epilogue_input_nodes, output_size
+    )
+    if any(kind == "col" for kind in epilogue_arg_kinds):
+        raise NotImplementedError("FlyDSL FlexGEMM col epilogue args are not supported yet")
+    epilogue_arg_dtypes = tuple(
+        _flydsl_epilogue_dtype_name(node.get_dtype())
+        for node in epilogue_input_nodes
+    )
+    input_nodes = [*input_nodes, *epilogue_input_nodes, *aux_input_nodes]
+    aux_out_index = (
+        2 + len(epilogue_input_nodes) if aux_input_nodes else None
+    )
+    returns_aux = bool(aux_input_nodes)
+    aux_out_dtype = (
+        _flydsl_epilogue_dtype_name(aux_input_nodes[0].get_dtype())
+        if aux_input_nodes
+        else "f16"
+    )
+
+    m = _static_int_or_none(mat1.get_size()[-2])
+    n = _static_int_or_none(mat2.get_size()[-1])
+    k = _static_int_or_none(mat1.get_size()[-1])
+    if m is None or n is None or k is None:
+        raise NotImplementedError("FlyDSL FlexGEMM requires static M/N/K")
+    if not V.graph.sizevars.statically_known_equals(mat2.get_size()[-2], k):
+        raise NotImplementedError("FlyDSL FlexGEMM expects mat2 shape [K, N]")
+
+    _, epilogue_source = materialize_flydsl_flex_gemm_epilogue(
+        subgraph.graph_module, gemm_op, epilogue_arg_placeholders
+    )
+    configs = get_hgemm_configs(m, n, k)
+    if not tuned and configs:
+        configs = configs[:1]
+    if not configs:
+        raise NotImplementedError("FlyDSL FlexGEMM found no valid hgemm configs")
+
+    choices: list[Any] = []
+    for flydsl_kwargs in configs:
+        error = flydsl_mm_template.maybe_append_choice(
+            choices,
+            input_nodes=input_nodes,
+            layout=layout,
+            mutated_inputs=aux_input_nodes or None,
+            explicit_epilogue_source=epilogue_source,
+            explicit_epilogue_arg_kinds=epilogue_arg_kinds,
+            explicit_epilogue_arg_dtypes=epilogue_arg_dtypes,
+            explicit_epilogue_arg_count=len(epilogue_input_nodes),
+            explicit_aux_out_index=aux_out_index,
+            explicit_returns_aux=returns_aux,
+            explicit_aux_out_dtype=aux_out_dtype,
+            **flydsl_kwargs,
+        )
+        if error is not None:
+            raise error
+    result, _ = autotune_select_algorithm(
+        "flex_gemm_flydsl", choices, input_nodes, layout
     )
     if aux_outs:
         return (result, *aux_outs)
