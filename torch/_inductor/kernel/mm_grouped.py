@@ -4,8 +4,10 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 import torch
+from torch._inductor.codegen.flydsl.flydsl_template import FlyDSLTemplate
 from torch._dynamo.utils import counters
 from torch._inductor.codegen.cutedsl.cutedsl_template import CuteDSLTemplate
+from torch._inductor import config as inductor_config
 from torch._inductor.runtime.triton_compat import tl
 from torch._inductor.template_heuristics.cutedsl import get_groupgemm_configs
 from torch._inductor.virtualized import V
@@ -142,6 +144,11 @@ cutedsl_grouped_mm_template = CuteDSLTemplate(
     source=load_kernel_template("cutedsl_mm_grouped"),
 )
 
+flydsl_grouped_mm_template = FlyDSLTemplate(
+    name="grouped_gemm_flydsl",
+    source=load_kernel_template("flydsl_grouped_mm"),
+)
+
 
 def grouped_mm_args(
     mat1: TensorBox,
@@ -244,6 +251,71 @@ def can_use_triton_kernel(
         return offs is not None
     else:
         return offs is None
+
+
+def get_flydsl_grouped_mm_template_kwargs(
+    mat_a: TensorBox,
+    mat_b: TensorBox,
+    layout: Layout,
+    a_is_2d: bool,
+    b_is_2d: bool,
+    offs: TensorBox | None,
+    bias: TensorBox | None,
+    scale_result: TensorBox | None,
+    is_nonzero: bool,
+) -> list[dict[str, object]]:
+    from ..template_heuristics.flydsl_gemm import get_grouped_hgemm_configs
+
+    if not is_nonzero:
+        return []
+    if torch.version.hip is None or layout.device.type != "cuda":
+        return []
+    if not (a_is_2d and not b_is_2d and offs is not None):
+        return []
+    if bias is not None or scale_result is not None:
+        return []
+    if mat_a.get_dtype() != mat_b.get_dtype() or layout.dtype != mat_a.get_dtype():
+        return []
+    if mat_a.get_dtype() not in (torch.float16, torch.bfloat16):
+        return []
+    if not (inductor_config.max_autotune or inductor_config.max_autotune_gemm):
+        return []
+    if "FLYDSL" not in [
+        x.strip().upper()
+        for x in inductor_config.max_autotune_gemm_backends.split(",")
+    ]:
+        return []
+    try:
+        from ..codegen.flydsl import flydsl_utils
+    except Exception:
+        log.debug("Could not import flydsl_utils for grouped FlyDSL gate", exc_info=True)
+        return []
+    if not flydsl_utils.runtime_available():
+        return []
+
+    mat1_stride = mat_a.get_stride()
+    mat2_stride = mat_b.get_stride()
+    out_stride = layout.stride
+    sizevars = V.graph.sizevars
+    if not sizevars.statically_known_equals(mat1_stride[-1], 1):
+        return []
+    if not sizevars.statically_known_equals(out_stride[-1], 1):
+        return []
+    # hgemm_splitk accepts B as [K, N] and transposes to [N, K] internally.
+    if not sizevars.statically_known_equals(mat2_stride[-1], 1):
+        return []
+
+    n = mat_b.get_size()[-1]
+    k = mat_a.get_size()[-1]
+    try:
+        n_static = int(n)
+        k_static = int(k)
+        # total M only influences config pruning in this v0 wrapper; exact group
+        # sizes remain runtime values from offs.
+        m_static = int(mat_a.get_size()[0])
+    except (TypeError, ValueError):
+        return []
+    return get_grouped_hgemm_configs(m_static, n_static, k_static)
 
 
 def create_offsets(offs_box, m1_is_2d, m2_is_2d, m, n, k, alignment):
@@ -430,6 +502,16 @@ def _tuned_grouped_mm_common(
                 **kwargs,
                 **asdict(config),
             )
+
+    for flydsl_kwargs in get_flydsl_grouped_mm_template_kwargs(
+        mat_a, mat_b, layout, a_is_2d, b_is_2d, offs, bias, scale_result, is_nonzero
+    ):
+        flydsl_grouped_mm_template.maybe_append_choice(
+            choices,
+            input_nodes=input_nodes,
+            layout=layout,
+            **flydsl_kwargs,
+        )
 
     if (
         is_nonzero

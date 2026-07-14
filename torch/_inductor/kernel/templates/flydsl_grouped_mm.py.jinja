@@ -1,0 +1,114 @@
+import functools
+
+import torch._inductor.kernel.vendored_templates.flydsl.kernels as flydsl_kernels
+from torch._inductor.kernel.vendored_templates.flydsl.kernels import (
+    SPLIT_K_SEMAPHORE_MAX_LEN,
+    compile_hgemm_kernel,
+)
+from torch._inductor.kernel.vendored_templates.flydsl.kernels.tensor_shim import (
+    _run_compiled,
+)
+
+{{gen_defines()}}
+
+
+@functools.lru_cache(maxsize=128)
+def _get_hgemm_semaphore(stream, device):
+    semaphore = torch.zeros(
+        (SPLIT_K_SEMAPHORE_MAX_LEN,), dtype=torch.int32, device=device
+    )
+    signal = torch.zeros(
+        (SPLIT_K_SEMAPHORE_MAX_LEN,), dtype=torch.int32, device=device
+    )
+    return semaphore, signal
+
+
+def _flydsl_grouped_mm(output, mat1, mat2, offs, stream):
+    group_count, k, n = mat2.shape
+    hgemm_kwargs = {
+        "TILE_M": TILE_M,
+        "TILE_N": TILE_N,
+        "TILE_K": TILE_K,
+        "STAGES": STAGES,
+        "SPLIT_K": SPLIT_K,
+        "BLOCK_M_WARPS": BLOCK_M_WARPS,
+        "BLOCK_N_WARPS": BLOCK_N_WARPS,
+        "BLOCK_K_WARPS": BLOCK_K_WARPS,
+        "B_TO_LDS": B_TO_LDS,
+        "HAS_BIAS": False,
+        "GROUPED": True,
+        "GROUP_COUNT": group_count,
+        "GROUPED_TILE_MAP": True,
+    }
+
+    if mat1.shape[-1] != k:
+        raise AssertionError(f"Expected mat1.shape[-1] == K={k}, got {mat1.shape[-1]}")
+    if output.shape[-1] != n:
+        raise AssertionError(f"Expected output.shape[-1] == N={n}, got {output.shape[-1]}")
+
+    output_mn = output.view(-1, n)
+    mat1_mk = mat1.view(-1, k)
+    n_blocks = (n + TILE_N - 1) // TILE_N
+    total_m = mat1_mk.shape[0]
+    if total_m == 0:
+        return output
+    # Build a compact real-tile map on device, then launch one CTA per real tile.
+    # This mirrors the CuteDSL-style split between lightweight problem metadata
+    # preparation and the main grouped GEMM kernel.
+    max_m_tiles_upper = (total_m + TILE_M - 1) // TILE_M
+    total_tiles_upper = group_count * max_m_tiles_upper * n_blocks
+    tile_map_len = max(1, total_tiles_upper)
+    tile_groups = torch.empty((tile_map_len,), device=mat1.device, dtype=torch.int32)
+    tile_ms = torch.empty((tile_map_len,), device=mat1.device, dtype=torch.int32)
+    tile_ns = torch.empty((tile_map_len,), device=mat1.device, dtype=torch.int32)
+    total_tiles_tensor = torch.zeros((1,), device=mat1.device, dtype=torch.int32)
+
+    prep_exe = flydsl_kernels.compile_grouped_tile_map_kernel(TILE_M, group_count)
+    _run_compiled(
+        prep_exe,
+        offs,
+        tile_groups,
+        tile_ms,
+        tile_ns,
+        total_tiles_tensor,
+        n_blocks,
+        max_m_tiles_upper,
+        total_tiles_upper,
+        stream,
+    )
+    total_tiles = int(total_tiles_tensor.item())
+    if total_tiles == 0:
+        return output
+    semaphore, signal = _get_hgemm_semaphore(stream, mat1.device)
+    bias_tensor = mat1_mk
+    if mat1_mk.dtype == torch.half:
+        exe = compile_hgemm_kernel("f16", n, k, **hgemm_kwargs)
+    elif mat1_mk.dtype == torch.bfloat16:
+        exe = compile_hgemm_kernel("bf16", n, k, **hgemm_kwargs)
+    else:
+        raise NotImplementedError(f"Unsupported dtype for FlyDSL grouped hgemm: {mat1_mk.dtype}")
+
+    _run_compiled(
+        exe,
+        output_mn,
+        mat1_mk,
+        mat2,
+        bias_tensor,
+        mat1_mk.shape[0],
+        semaphore,
+        signal,
+        offs,
+        tile_groups,
+        tile_ms,
+        tile_ns,
+        total_tiles_tensor,
+        0,
+        total_tiles,
+        stream,
+    )
+    return output
+
+
+{{def_kernel("mat1", "mat2", "offs")}}
+    output = {{get_output()}}
+    return _flydsl_grouped_mm(output, mat1, mat2, offs, stream)
